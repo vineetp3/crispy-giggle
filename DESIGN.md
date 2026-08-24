@@ -410,6 +410,30 @@ Dockerfile. No tests beyond unit tests on block extraction and the differencing 
       incremental design.
 - [ ] Confirm the merchant agreement covers automated fetching of publisher storefronts.
 
+### Found during implementation (2026-08-24)
+
+- [ ] **The coverage metric currently counts review-widget text as unreachable.** On the
+      fixture seed, 2,261 of 2,557 product-region words were classed unreachable, almost
+      all of it Okendo review bodies and vote controls. Real runs will explain some of it
+      through the `okendo` metafields, but the denominator still needs review text either
+      excluded or attributed. **Treat coverage percentages as provisional until this is
+      settled** — the current number understates API coverage badly.
+- [ ] **Text-only contamination is not detectable.** `global.description_tag` on skout's
+      peanut-butter product contains apple-pie copy with no product ID, GID or URL in it,
+      so the contamination rule cannot see it. It surfaced as `low_support_admitted`,
+      which is the correct "ambiguous middle" bucket for human review, but it will not be
+      caught automatically. A same-store title check on the value is the obvious next
+      filter.
+- [ ] **The chrome guard on metafield keys was removed.** It double-counted across
+      products (a key on 5 products with 4 sibling pages scored 20 against a threshold of
+      4) and wrongly rejected `custom.nutrients`, `filter.ingredients` and
+      `custom.product_faqs`. Page chrome is already handled by differencing, and
+      metafields are product-scoped by construction. Replaced with a recorded diagnostic
+      noting keys whose value is identical on every product.
+- [ ] **Criterion 5 (label recovery) is unverified.** No labels were recovered from the
+      skout seed. remi is the store whose theme renders `Material:` and `Battery life:`
+      adjacent to their values, so this needs remi's pages to test.
+
 ---
 
 ## 11. Facts this build depends on

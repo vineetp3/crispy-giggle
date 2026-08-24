@@ -1,0 +1,33 @@
+[project]
+name = "pier39-discovery-poc"
+version = "0.1.0"
+description = "Feasibility POC: Shopify catalogue ingestion (metafields + rendered HTML) into a queryable index"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.15",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "httpx>=0.28",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+    "openai>=1.60",
+    "cohere>=5.13",
+    "crawl4ai>=0.4",
+    "rich>=13.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[project.scripts]
+poc = "pier39_poc.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pier39_poc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

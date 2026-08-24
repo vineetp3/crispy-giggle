@@ -1,0 +1,44 @@
+# remi is the store where the specification block lives only in the theme. Several of
+# these questions are answerable ONLY from template constants, which is exactly what
+# they are here to test.
+
+questions:
+  - q: cordless water flosser
+    kind: lexical
+    expect_handles: [water-flosser]
+
+  - q: how long does the battery last
+    kind: attribute      # theme-resident: "Battery life: 30 days per charge"
+    expect_handles: [water-flosser]
+
+  - q: what material is it made of
+    kind: attribute      # theme-resident: "Material: BPA-free, food-safe plastic"
+    expect_handles: [water-flosser]
+
+  - q: what is included in the box
+    kind: attribute      # theme-resident: nozzles, USB cable, guarantee
+    expect_handles: [water-flosser]
+
+  - q: how do I charge it
+    kind: attribute      # theme-resident: "Power: USB rechargeable"
+    expect_handles: [water-flosser]
+
+  - q: something for cleaning my night guard or retainer
+    kind: semantic
+    expect_handles: [ultrasonic-cleaner-pro]
+
+  - q: sanitise my toothbrush
+    kind: semantic
+    expect_handles: [uv-toothbrush-sanitizer]
+
+  - q: good for braces
+    kind: semantic
+    expect_handles: [water-flosser]
+
+  - q: is it portable for travel
+    kind: attribute
+    expect_handles: [water-flosser]
+
+  - q: gentle on sensitive gums
+    kind: semantic
+    expect_handles: [water-flosser]

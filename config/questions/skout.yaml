@@ -1,0 +1,58 @@
+# Hand-written shopper questions. `expect_handles` are the products that SHOULD appear
+# in the top-k. Fill these in against the real catalogue after the first fetch-api run;
+# the handles below are the ones observed on 2026-08-24.
+#
+# kinds:
+#   attribute -- answerable only from a structured metafield or theme content
+#   negation  -- must be enforced by SQL, not cosine similarity
+#   semantic  -- ordinary intent matching
+#   lexical   -- exact term, tests the tsvector leg
+
+questions:
+  - q: peanut butter cookies
+    kind: lexical
+    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+
+  - q: soft baked cookies with chocolate
+    kind: semantic
+    expect_handles:
+      - skout-organic-double-chocolate-soft-baked-cookies
+      - skout-organic-oatmeal-chocolate-chip-soft-baked-cookies
+
+  - q: what are the nutrition facts, calories and sugar
+    kind: attribute
+    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+
+  - q: cookies without peanuts
+    kind: negation
+    exclude_terms: [peanut]
+    expect_handles:
+      - skout-organic-lemon-poppyseed-soft-baked-cookies
+      - skout-organic-oatmeal-raisin-soft-baked-cookies
+
+  - q: tree nut free snacks
+    kind: negation
+    exclude_terms: [almond, cashew, hazelnut, pecan, walnut]
+    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+
+  - q: gluten free and vegan certified
+    kind: attribute
+    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+
+  - q: something for school lunches for kids
+    kind: semantic
+    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+
+  - q: what is the shelf life and how should I store them
+    kind: attribute
+    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+
+  - q: variety pack to try several flavours
+    kind: semantic
+    expect_handles:
+      - skout-organic-soft-baked-cookie-variety-pack
+      - skout-organic-soft-baked-cookie-sample-pack
+
+  - q: lemon poppyseed
+    kind: lexical
+    expect_handles: [skout-organic-lemon-poppyseed-soft-baked-cookies]
