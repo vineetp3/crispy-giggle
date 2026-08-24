@@ -8,7 +8,7 @@ defaults:
 
   # Page budget. "pages per store" is three settings, because they answer
   # different questions.
-  profile_pages: 20 # pages used to derive the boilerplate profile + allowlist
+  profile_pages: 40 # pages used to derive the boilerplate profile + allowlist
   crawl_scope: sample # none | sample | template_representatives | all
   max_pages: 250 # hard ceiling, independent of crawl_scope
 
@@ -41,7 +41,7 @@ stores:
     fetch_profile: plain
 
   - slug: remi
-    domain: shopremi.com
+    domain: remi-club.myshopify.com
     enabled: true
     fetch_profile: stealth
     concurrency: 2
