@@ -1,0 +1,21 @@
+# skout: hand-authored reference set for per-product theme labels.
+#
+# Authored 2026-08-25 from `poc labels --store skout`, BEFORE any classifier was run.
+# This file is both the input to the `static` label policy and the ground truth the
+# `llm` policy is scored against, so it must not be edited after seeing model output.
+#
+#   spec       a durable property of the product; may become quotable
+#   widget     storefront control, page title or marketing heading; never stored
+#   uncertain  genuine product content that is not a checkable property; retrieval only
+#
+# Four of these six are cart pickers, which is why storing per-product pairs without a
+# gate floods this store. `Pack Size` reads like a specification and is a variant
+# selector; `Quantity` is denylisted globally and is a real specification on remi.
+
+labels:
+  "About the shirt": uncertain
+  "Delivery Frequency": widget
+  "Pack Size": widget
+  "Pro Tip": uncertain
+  "Size": widget
+  "This item": widget

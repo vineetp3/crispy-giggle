@@ -1,0 +1,22 @@
+# remi: hand-authored reference set for per-product theme labels.
+#
+# Authored 2026-08-25 from `poc labels --store remi`, BEFORE any classifier was run.
+# This file is both the input to the `static` label policy and the ground truth the
+# `llm` policy is scored against, so it must not be edited after seeing model output.
+#
+#   spec       a durable property of the product; may become quotable
+#   widget     storefront control, page title or marketing heading; never stored
+#   uncertain  genuine product content that is not a checkable property; retrieval only
+#
+# These are one reader's judgements on one store. Precision measured against this file
+# is agreement with that judgement, not correctness in general. See docs/FINDINGS.md.
+
+labels:
+  "Compatible with": spec
+  "Custom Night Guard": widget
+  "Emergency Solution": widget
+  "Guard/Retainer Rush Lab Service": widget
+  "Kill rate": spec
+  "Material": spec
+  "On Remi Club": widget
+  "Quantity": spec

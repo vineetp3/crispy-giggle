@@ -70,12 +70,18 @@ CREATE TABLE IF NOT EXISTS template_constants (
     id               bigserial PRIMARY KEY,
     store_id         integer NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
     template_key     text NOT NULL,
+    handle           text NOT NULL DEFAULT '',
     value            text NOT NULL,
     label            text,
     value_hash       text NOT NULL,
-    observed_at      timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (store_id, template_key, value_hash)
+    observed_at      timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE template_constants ADD COLUMN IF NOT EXISTS handle text NOT NULL DEFAULT '';
+ALTER TABLE template_constants
+    DROP CONSTRAINT IF EXISTS template_constants_store_id_template_key_value_hash_key;
+CREATE UNIQUE INDEX IF NOT EXISTS template_constants_uniq
+    ON template_constants (store_id, template_key, handle, value_hash);
 
 -- trust_class lives on the chunk, not only on field_assertions: `text` is what an
 -- answer layer receives, so the class has to travel with it.

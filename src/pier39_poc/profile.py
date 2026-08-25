@@ -57,6 +57,8 @@ from .blocks import (
 )
 from .config import StoreConfig
 from .crawl import template_key
+from .labels import SPEC, load_reference
+from .labels import normalise as normalise_label
 from .matching import (
     FREE_FROM_KEYS,
     PageIndex,
@@ -302,8 +304,18 @@ def build_profile(store: StoreConfig) -> dict[str, Any]:
     admitted = [v for v in verdicts.values() if v.admitted]
     rejected = [v for v in verdicts.values() if not v.admitted]
     allowlist = [v.to_dict() for v in sorted(admitted, key=lambda v: v.full_key)]
+    reference = load_reference(store.slug)
+    affirmed = {
+        c["label"]
+        for blocks in (constants.get("per_product") or {}).values()
+        for c in blocks
+        if c.get("label") and reference.get(normalise_label(c["label"])) == SPEC
+    }
     attributes = build_attributes(
-        allowlist, constants.get("by_template") or {}, _reference_key_counts(products)
+        allowlist,
+        constants.get("by_template") or {},
+        _reference_key_counts(products),
+        affirmed,
     )
 
     payload = {

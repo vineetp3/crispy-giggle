@@ -217,11 +217,19 @@ def replace_template_constants(
     for r in rows:
         conn.execute(
             """
-            INSERT INTO template_constants (store_id, template_key, value, label, value_hash)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (store_id, template_key, value_hash) DO NOTHING
+            INSERT INTO template_constants
+                (store_id, template_key, handle, value, label, value_hash)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (store_id, template_key, handle, value_hash) DO NOTHING
             """,
-            (store_id, r["template_key"], r["value"], r.get("label"), r["value_hash"]),
+            (
+                store_id,
+                r["template_key"],
+                r.get("handle") or "",
+                r["value"],
+                r.get("label"),
+                r["value_hash"],
+            ),
         )
 
 

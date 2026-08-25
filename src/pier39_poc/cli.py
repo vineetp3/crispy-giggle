@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from . import db, evaluate
+from . import labels as labels_stage
 from . import index as index_stage
 from . import merge as merge_stage
 from . import profile as profile_stage
 from . import report as report_stage
-from .artifacts import record_stage, write_jsonl
+from .artifacts import read_json, record_stage, write_jsonl
 from .config import ConfigError, StoreConfig, load_env, load_stores, token_for
 from .crawl import GROUP_FLOOR, fetch_pages, floor_shortfall, select_pages
 from .shopify_api import PRODUCTS_QUERY, AdminClient, ShopifyError
@@ -178,9 +179,21 @@ def profile_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
 
 
 @app.command("merge")
-def merge_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
+def merge_cmd(
+    store: Optional[str] = typer.Option(None, "--store"),
+    label_policy: str = typer.Option(
+        "none",
+        "--label-policy",
+        help="gate for per-product theme spec pairs: none | static | llm",
+    ),
+) -> None:
     for cfg in _stores(store):
-        counts = merge_stage.run(cfg)
+        try:
+            policy = labels_stage.get_policy(label_policy)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2)
+        counts = merge_stage.run(cfg, policy)
         console.print(
             f"[bold]{cfg.slug}[/bold]: {counts['products']} products, "
             f"{counts['assertions']} assertions "
@@ -385,6 +398,59 @@ def eval_cmd(
             indent=2,
         )
     )
+
+
+@app.command("labels")
+def labels_cmd(
+    store: Optional[str] = typer.Option(None, "--store"),
+    as_yaml: bool = typer.Option(False, "--yaml", help="emit a reference-set skeleton"),
+) -> None:
+    for cfg in _stores(store):
+        profile = read_json(cfg.profile_path)
+        per_product = (profile.get("template_constants") or {}).get("per_product") or {}
+        stats: dict[str, dict[str, Any]] = {}
+        for handle, pairs in per_product.items():
+            for pair in pairs:
+                label = pair.get("label")
+                if not label:
+                    continue
+                entry = stats.setdefault(
+                    label, {"pairs": 0, "handles": set(), "examples": []}
+                )
+                entry["pairs"] += 1
+                entry["handles"].add(handle)
+                if len(entry["examples"]) < 3:
+                    entry["examples"].append(pair["value"])
+
+        reference = labels_stage.load_reference(cfg.slug)
+        if as_yaml:
+            print(f"# {cfg.slug}: hand-authored label reference set")
+            print("labels:")
+            for label in sorted(stats):
+                current = reference.get(labels_stage.normalise(label), "uncertain")
+                print(f"  {json.dumps(label)}: {current}")
+            continue
+
+        table = Table(title=f"{cfg.slug}: per-product theme labels")
+        table.add_column("label")
+        table.add_column("pairs", justify="right")
+        table.add_column("products", justify="right")
+        table.add_column("reference")
+        table.add_column("example")
+        for label in sorted(stats, key=lambda x: -stats[x]["pairs"]):
+            entry = stats[label]
+            table.add_row(
+                label,
+                str(entry["pairs"]),
+                str(len(entry["handles"])),
+                reference.get(labels_stage.normalise(label), "-"),
+                (entry["examples"][0] or "")[:58],
+            )
+        console.print(table)
+        console.print(
+            f"[dim]{sum(e['pairs'] for e in stats.values())} pairs, "
+            f"{len(stats)} distinct labels[/dim]"
+        )
 
 
 @app.command("seed-fixtures")

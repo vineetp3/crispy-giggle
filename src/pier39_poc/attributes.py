@@ -48,9 +48,11 @@ def build(
     allowlist: list[dict[str, Any]],
     template_constants: dict[str, list[dict[str, Any]]],
     reference_keys: dict[str, int],
+    per_product_labels: set[str] | None = None,
 ) -> dict[str, Any]:
     theme_labels = sorted(
         {c["label"] for blocks in template_constants.values() for c in blocks if c.get("label")}
+        | set(per_product_labels or set())
     )
 
     out: dict[str, Any] = {}
