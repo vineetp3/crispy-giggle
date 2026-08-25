@@ -44,7 +44,7 @@ from .artifacts import load_products, read_json, record_stage, sha256
 from .blocks import visible_text
 from .config import StoreConfig
 from .crawl import template_key
-from .labels import SPEC, UNCERTAIN, LabelPolicy, NonePolicy
+from .labels import SPEC, UNCERTAIN, WIDGET, LabelPolicy, NonePolicy
 from .matching import (
     FREE_FROM_FIELD,
     FREE_FROM_KEYS,
@@ -220,8 +220,12 @@ def build_assertions(
         )
 
     key = template_key(product)
+    gate = policy or NonePolicy()
     for i, constant in enumerate(template_constants.get(key, [])):
         label = constant.get("label")
+        if label and gate.gates_template_constants and store is not None:
+            if gate.verdict(store, label, constant["value"]) == WIDGET:
+                continue
         quotable = bool(label) and is_quotable_theme_value(constant["value"])
         out.append(
             Assertion(
@@ -236,7 +240,6 @@ def build_assertions(
             )
         )
 
-    gate = policy or NonePolicy()
     used: dict[str, int] = {}
     for pair in (per_product or {}).get(handle, []):
         label = pair.get("label")

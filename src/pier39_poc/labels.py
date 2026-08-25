@@ -44,6 +44,7 @@ def normalise(label: str) -> str:
 
 class LabelPolicy(Protocol):
     name: str
+    gates_template_constants: bool
 
     def verdict(self, store: StoreConfig, label: str, value: str) -> str: ...
 
@@ -53,6 +54,7 @@ class NonePolicy:
     """Rejects every per-product pair, reproducing behaviour before the gate existed."""
 
     name: str = "none"
+    gates_template_constants: bool = False
 
     def verdict(self, store: StoreConfig, label: str, value: str) -> str:
         return WIDGET
@@ -85,6 +87,7 @@ class StaticPolicy:
     """Reads the hand-authored reference set in `config/spec_labels/<slug>.yaml`."""
 
     name: str = "static"
+    gates_template_constants: bool = True
     directory: Path | None = None
 
     def verdict(self, store: StoreConfig, label: str, value: str) -> str:
@@ -137,6 +140,7 @@ class ClassifierPolicy:
     """
 
     name: str = "llm"
+    gates_template_constants: bool = True
     client: Any = None
     model: str = CLASSIFIER_MODEL
     _cache: dict[str, dict[str, str]] | None = None

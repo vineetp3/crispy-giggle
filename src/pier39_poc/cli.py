@@ -182,7 +182,7 @@ def profile_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
 def merge_cmd(
     store: Optional[str] = typer.Option(None, "--store"),
     label_policy: str = typer.Option(
-        "none",
+        "static",
         "--label-policy",
         help="gate for per-product theme spec pairs: none | static | llm",
     ),
@@ -407,9 +407,11 @@ def labels_cmd(
 ) -> None:
     for cfg in _stores(store):
         profile = read_json(cfg.profile_path)
-        per_product = (profile.get("template_constants") or {}).get("per_product") or {}
+        tc = profile.get("template_constants") or {}
+        sources = list((tc.get("per_product") or {}).items())
+        sources += list((tc.get("by_template") or {}).items())
         stats: dict[str, dict[str, Any]] = {}
-        for handle, pairs in per_product.items():
+        for handle, pairs in sources:
             for pair in pairs:
                 label = pair.get("label")
                 if not label:
@@ -450,6 +452,86 @@ def labels_cmd(
         console.print(
             f"[dim]{sum(e['pairs'] for e in stats.values())} pairs, "
             f"{len(stats)} distinct labels[/dim]"
+        )
+
+
+@app.command("compare-labels")
+def compare_labels_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
+    """Score the llm label policy against the hand-authored reference set."""
+    for cfg in _stores(store):
+        profile = read_json(cfg.profile_path)
+        tc = profile.get("template_constants") or {}
+        groups = list((tc.get("per_product") or {}).values())
+        groups += list((tc.get("by_template") or {}).values())
+        examples: dict[str, list[str]] = {}
+        pairs_per_label: dict[str, int] = {}
+        for pairs in groups:
+            for pair in pairs:
+                label = pair.get("label")
+                if not label:
+                    continue
+                examples.setdefault(label, []).append(pair["value"])
+                pairs_per_label[label] = pairs_per_label.get(label, 0) + 1
+
+        reference = labels_stage.load_reference(cfg.slug)
+        if not reference:
+            console.print(f"[yellow]{cfg.slug}: no reference set, nothing to score[/yellow]")
+            continue
+
+        classifier = labels_stage.ClassifierPolicy()
+        verdicts = classifier.warm(cfg, examples)
+
+        table = Table(title=f"{cfg.slug}: llm vs reference")
+        table.add_column("label")
+        table.add_column("pairs", justify="right")
+        table.add_column("reference")
+        table.add_column("llm")
+        table.add_column("agree")
+
+        agree = 0
+        scored = 0
+        tp = fp = fn = 0
+        for label in sorted(examples, key=lambda x: -pairs_per_label[x]):
+            key = labels_stage.normalise(label)
+            ref = reference.get(key)
+            got = verdicts.get(key, labels_stage.UNCERTAIN)
+            if ref is None:
+                continue
+            scored += 1
+            same = ref == got
+            agree += 1 if same else 0
+            if ref == labels_stage.WIDGET and got == labels_stage.WIDGET:
+                tp += 1
+            elif ref != labels_stage.WIDGET and got == labels_stage.WIDGET:
+                fp += 1
+            elif ref == labels_stage.WIDGET and got != labels_stage.WIDGET:
+                fn += 1
+            table.add_row(
+                label,
+                str(pairs_per_label[label]),
+                ref,
+                got,
+                "yes" if same else "[red]no[/red]",
+            )
+        console.print(table)
+
+        precision = tp / (tp + fp) if (tp + fp) else None
+        recall = tp / (tp + fn) if (tp + fn) else None
+        console.print(
+            f"[bold]{cfg.slug}[/bold]: agreement {agree}/{scored}"
+            + (f", widget precision {precision:.2f}" if precision is not None else "")
+            + (f", widget recall {recall:.2f}" if recall is not None else "")
+        )
+        pairs_wrong = sum(
+            pairs_per_label[lbl]
+            for lbl in examples
+            if reference.get(labels_stage.normalise(lbl))
+            and reference[labels_stage.normalise(lbl)]
+            != verdicts.get(labels_stage.normalise(lbl), labels_stage.UNCERTAIN)
+        )
+        console.print(
+            f"[dim]{pairs_wrong} of {sum(pairs_per_label.values())} pairs "
+            f"affected by a disagreement[/dim]"
         )
 
 
