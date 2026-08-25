@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from openai import OpenAI
 
 MAX_INPUTS_PER_REQUEST = 2048
-# Conservative: the documented cap is 300k tokens summed across a request.
 MAX_CHARS_PER_REQUEST = 400_000
 
 
@@ -88,7 +87,6 @@ class Embedder:
             for item in sorted(response.data, key=lambda d: d.index):
                 raw = list(item.embedding)
                 if not self.stats.first_batch_norms:
-                    # Measure before normalising, so the log reflects what OpenAI sent.
                     self.stats.first_batch_norms = [
                         math.sqrt(sum(v * v for v in raw))
                     ]

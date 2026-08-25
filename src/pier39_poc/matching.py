@@ -1,19 +1,27 @@
 """Metafield value normalisation, page matching, and contamination detection.
 
-Three jobs:
+Gotchas, in order of how much damage they caused:
 
-1. Turn a metafield value of any Shopify type into candidate strings that could appear
-   on a page. `list.*` yields one candidate per element; `rich_text_field` and `json`
-   yield leaf text nodes.
+Bag-of-words containment over a whole page is not a render signal. A 60-token
+candidate built from common words clears an 0.8 token-overlap bar on any large page
+without being present: `custom.product_faqs` scored 0.833 on a skout page with 10 of
+its 60 tokens absent from the page entirely. Every match therefore has to survive
+`best_window_overlap`, which asks whether the tokens co-occur inside one span rather
+than anywhere on the page. Removing that gate silently reclassifies unrendered LLM
+enrichment as rendered, which is how it reaches a shopper.
 
-2. Decide whether a candidate appears on the page. This is token-subset overlap, NOT
-   exact substring containment. Exact matching rejects `custom.nutrients`, because the
-   value is `Protein [1g]` and the theme renders `Protein 1g`. Silently dropping good
-   structured fields is the worst available failure mode -- it looks like success.
+The tolerance the gate must NOT break: skout's theme renders `Protein [1g]` as
+`Protein 1g`, so matching is on normalised tokens, never on substrings. Exact
+containment rejects `custom.nutrients`, and a silently dropped structured field looks
+exactly like success.
 
-3. Reject values carrying a foreign product identifier. This one rule kills
-   `loox.review_feed`, `stamped.reviews` and `product_seo.seo_tags`, all of which
-   attribute one product's content to another.
+`rich_text_field` values are ASTs whose `type` keys hold strings ("root",
+"paragraph", "text"). A generic string-leaf walk harvests those as content, which
+pollutes embeddings and makes `cands[0]` identical across every product. Rich text is
+therefore walked by node type, not generically.
+
+`detect_foreign_product_ids` is separate from `detect_contamination` only because it
+needs the full catalogue id set, which does not exist until every page is fetched.
 """
 
 from __future__ import annotations
@@ -24,7 +32,6 @@ from dataclasses import dataclass
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
-# Types whose values are references, not displayable text.
 REFERENCE_TYPES = (
     "file_reference",
     "metaobject_reference",
@@ -40,6 +47,15 @@ REFERENCE_TYPES = (
 STRUCTURED_TYPES = ("json", "json_string", "rich_text_field", "rating", "dimension",
                     "volume", "weight", "money")
 
+RICH_TEXT_TYPES = ("rich_text_field",)
+
+FREE_FROM_KEYS = frozenset({("filter", "contains")})
+FREE_FROM_FIELD = "free_from"
+
+_AST_STRUCTURAL_KEYS = frozenset({"type", "level", "url", "target", "title", "listType"})
+
+_AST_BLOCK_TYPES = frozenset({"paragraph", "heading", "list-item"})
+
 
 def tokens(text: str) -> list[str]:
     return _WORD_RE.findall(text.lower())
@@ -50,31 +66,47 @@ def is_reference_type(mf_type: str) -> bool:
     return base in REFERENCE_TYPES or base.startswith("metaobject_reference")
 
 
-# --------------------------------------------------------------------------- #
-# 1. value -> candidate strings
-# --------------------------------------------------------------------------- #
+def _rich_text_runs(node: object) -> list[str]:
+    if isinstance(node, dict):
+        kind = node.get("type")
+        children = node.get("children")
+        if kind in _AST_BLOCK_TYPES and isinstance(children, list):
+            parts = [p for child in children for p in _rich_text_runs(child)]
+            joined = " ".join(parts).strip()
+            return [joined] if joined else []
+        if kind == "text":
+            value = node.get("value")
+            if isinstance(value, str) and value.strip():
+                return [value.strip()]
+            return []
+        if isinstance(children, list):
+            return [p for child in children for p in _rich_text_runs(child)]
+        return []
+    if isinstance(node, list):
+        return [p for child in node for p in _rich_text_runs(child)]
+    return []
 
-def _leaf_strings(node: object) -> list[str]:
-    """Pull every string leaf out of nested JSON (rich text ASTs, json metafields)."""
+
+def _json_leaves(node: object) -> list[str]:
     out: list[str] = []
     if isinstance(node, str):
         s = node.strip()
         if s:
             out.append(s)
     elif isinstance(node, dict):
-        for k, v in node.items():
-            # Keys of a json metafield are meaningful too: "Best For", "Storage & Freshness"
-            if isinstance(k, str) and " " in k.strip():
-                out.append(k.strip())
-            out.extend(_leaf_strings(v))
+        for key, value in node.items():
+            if key in _AST_STRUCTURAL_KEYS:
+                continue
+            if isinstance(key, str) and " " in key.strip():
+                out.append(key.strip())
+            out.extend(_json_leaves(value))
     elif isinstance(node, (list, tuple)):
-        for v in node:
-            out.extend(_leaf_strings(v))
+        for value in node:
+            out.extend(_json_leaves(value))
     return out
 
 
-def candidates(mf_type: str, raw_value: str) -> list[str]:
-    """Normalise a metafield value into strings that might appear on a page."""
+def candidates(mf_type: str, raw_value: str | None) -> list[str]:
     if raw_value is None:
         return []
     value = raw_value.strip()
@@ -86,12 +118,32 @@ def candidates(mf_type: str, raw_value: str) -> list[str]:
     base = mf_type.removeprefix("list.")
     is_list = mf_type.startswith("list.")
 
+    if base in RICH_TEXT_TYPES:
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return [value]
+        runs = _rich_text_runs(parsed)
+        return runs or [value]
+
+    if base in ("rating", "dimension", "volume", "weight", "money"):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return [value]
+        if isinstance(parsed, dict):
+            scalar = parsed.get("value")
+            unit = parsed.get("unit") or parsed.get("currency_code")
+            if scalar is not None:
+                return [f"{scalar} {unit}".strip() if unit else str(scalar)]
+        return [value]
+
     if base in STRUCTURED_TYPES or value[:1] in "[{":
         try:
             parsed = json.loads(value)
         except (ValueError, TypeError):
             return [value]
-        out = _leaf_strings(parsed)
+        out = _json_leaves(parsed)
         return out or [value]
 
     if is_list:
@@ -105,10 +157,6 @@ def candidates(mf_type: str, raw_value: str) -> list[str]:
     return [value]
 
 
-# --------------------------------------------------------------------------- #
-# 2. matching
-# --------------------------------------------------------------------------- #
-
 @dataclass(frozen=True)
 class MatchResult:
     matched: bool
@@ -118,38 +166,47 @@ class MatchResult:
 
 @dataclass
 class PageIndex:
-    """A page's tokens as both a set (membership) and a sequence (proximity)."""
 
     sequence: list[str]
     token_set: set[str]
 
     @classmethod
-    def build(cls, text: str) -> "PageIndex":
+    def build(cls, text: str) -> PageIndex:
         seq = tokens(text)
         return cls(seq, set(seq))
 
-    def within_window(self, needles: list[str], window: int) -> bool:
-        """True when every needle occurs inside some window of consecutive tokens."""
-        if not needles:
-            return False
+    def best_window_overlap(self, needles: list[str], window: int) -> float:
         want = set(needles)
-        if not want.issubset(self.token_set):
-            return False
+        if not want or not self.sequence:
+            return 0.0
         seq = self.sequence
+        span = min(max(window, 1), len(seq))
+        counts: dict[str, int] = {}
+        distinct = 0
+        best = 0
         for i, tok in enumerate(seq):
-            if tok != needles[0]:
-                continue
-            if want.issubset(seq[i : i + window]):
-                return True
-        return False
+            if tok in want:
+                seen = counts.get(tok, 0)
+                counts[tok] = seen + 1
+                if seen == 0:
+                    distinct += 1
+            if i >= span:
+                leaving = seq[i - span]
+                if leaving in want:
+                    counts[leaving] -= 1
+                    if counts[leaving] == 0:
+                        distinct -= 1
+            if distinct > best:
+                best = distinct
+                if best == len(want):
+                    break
+        return best / len(want)
 
 
-# A one-token value can never be distinctive enough to attribute to a page.
 MIN_CANDIDATE_TOKENS = 2
-# `55.00` tokenises to two tokens but only four characters. Real content is longer.
 MIN_CANDIDATE_CHARS = 8
-# Two-token candidates must be adjacent-ish, not merely both present somewhere.
-SHORT_CANDIDATE_WINDOW = 6
+WINDOW_SLACK = 2.0
+MIN_WINDOW = 6
 
 
 def match_candidate(
@@ -158,47 +215,30 @@ def match_candidate(
     threshold: float = 0.8,
     min_tokens: int = MIN_CANDIDATE_TOKENS,
     min_chars: int = MIN_CANDIDATE_CHARS,
-    window: int = SHORT_CANDIDATE_WINDOW,
+    slack: float = WINDOW_SLACK,
 ) -> MatchResult:
-    """Token-subset overlap, tolerant of theme reformatting.
-
-    Exact substring matching is wrong here: `custom.nutrients` holds `Protein [1g]` while
-    the theme renders `Protein 1g`. Overlap on normalised tokens survives that.
-
-    Two guards stop junk matching:
-
-    * a token floor and a character floor, which together reject `true`, `new` and
-      `55.00` without rejecting genuinely short structured values like `Calories [110]`;
-    * a proximity gate for candidates of fewer than three tokens, so `Calories [110]`
-      only matches when `calories` and `110` actually appear near each other rather than
-      in unrelated corners of the page.
-    """
     cand = tokens(candidate)
     if len(cand) < min_tokens:
         return MatchResult(False, 0.0, "too_few_tokens")
     if sum(len(t) for t in cand) < min_chars:
         return MatchResult(False, 0.0, "too_short")
 
-    hits = sum(1 for t in cand if t in page.token_set)
-    score = hits / len(cand)
+    distinct = set(cand)
+    present = sum(1 for t in distinct if t in page.token_set)
+    score = present / len(distinct)
+    if score < threshold:
+        return MatchResult(False, score, "below_threshold")
 
-    if len(cand) < 3:
-        if page.within_window(cand, window):
-            return MatchResult(True, score, "ok_proximity")
-        return MatchResult(False, score, "not_adjacent")
+    window = max(MIN_WINDOW, int(len(cand) * slack))
+    local = page.best_window_overlap(cand, window)
+    if local >= threshold:
+        return MatchResult(True, local, "ok")
+    return MatchResult(False, local, "not_local")
 
-    if score >= threshold:
-        return MatchResult(True, score, "ok")
-    return MatchResult(False, score, "below_threshold")
-
-
-# --------------------------------------------------------------------------- #
-# 3. contamination
-# --------------------------------------------------------------------------- #
 
 _GID_RE = re.compile(r"gid://shopify/(\w+)/(\d+)")
 _LONG_ID_RE = re.compile(r"\b(\d{10,})\b")
-_PRODUCT_URL_RE = re.compile(r"/products/([a-z0-9][a-z0-9\-_]{2,})", re.I)
+_PRODUCT_URL_RE = re.compile(r"/products/([a-z0-9][a-z0-9\-_]{2,})", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -214,16 +254,6 @@ def detect_contamination(
     known_handles: frozenset[str] = frozenset(),
     store_domain: str | None = None,
 ) -> ContaminationResult:
-    """True when the value references a product that is not the one owning it.
-
-    Three signals, in order of confidence:
-
-    1. a `gid://shopify/Product/N` where N is not ours;
-    2. a `/products/<handle>` on the store's OWN domain where the handle is not ours --
-       this catches siblings that have since been deleted or archived, which a
-       catalogue-membership check would miss;
-    3. a `/products/<handle>` anywhere, where the handle belongs to a product we know.
-    """
     if not value:
         return ContaminationResult(False)
 
@@ -250,14 +280,76 @@ def detect_contamination(
     return ContaminationResult(False)
 
 
+def distinctive_title_tokens(
+    titles: dict[str, str], max_document_frequency: float = 0.2
+) -> dict[str, tuple[str, ...]]:
+    if not titles:
+        return {}
+    frequency: dict[str, int] = {}
+    tokenised = {h: set(tokens(t)) for h, t in titles.items()}
+    for toks in tokenised.values():
+        for tok in toks:
+            frequency[tok] = frequency.get(tok, 0) + 1
+    ceiling = max(1, int(max_document_frequency * len(titles)))
+    return {
+        handle: tuple(sorted(t for t in toks if frequency[t] <= ceiling and len(t) > 2))
+        for handle, toks in tokenised.items()
+    }
+
+
+MIN_PROSE_TOKENS_FOR_TITLE_CHECK = 15
+
+SKU_FORMAT_WORDS = frozenset({
+    "pack", "bundle", "box", "batch", "variety", "sample", "build", "set", "kit",
+    "case", "small", "large", "mini", "single", "multi", "count", "combo", "starter",
+})
+
+
+def _related_handles(a: str, b: str) -> bool:
+    return a in b or b in a
+
+
+def _is_sku_format_name(toks: tuple[str, ...]) -> bool:
+    return all(t in SKU_FORMAT_WORDS for t in toks)
+
+
+def detect_foreign_product_title(
+    value: str,
+    own_handle: str,
+    distinctive: dict[str, tuple[str, ...]],
+    min_tokens: int = 2,
+    slack: float = 3.0,
+) -> ContaminationResult:
+    if not value or not distinctive:
+        return ContaminationResult(False)
+    index = PageIndex.build(value)
+    if len(index.sequence) < MIN_PROSE_TOKENS_FOR_TITLE_CHECK:
+        return ContaminationResult(False)
+
+    own = distinctive.get(own_handle) or ()
+    if own and index.best_window_overlap(
+        list(own), max(MIN_WINDOW, int(len(own) * slack))
+    ) == 1.0:
+        return ContaminationResult(False)
+    if _is_sku_format_name(own) or any(w in own_handle for w in SKU_FORMAT_WORDS):
+        return ContaminationResult(False)
+
+    for handle, toks in distinctive.items():
+        if handle == own_handle or len(toks) < min_tokens:
+            continue
+        if _related_handles(handle, own_handle) or _is_sku_format_name(toks):
+            continue
+        window = max(MIN_WINDOW, int(len(toks) * slack))
+        if index.best_window_overlap(list(toks), window) == 1.0:
+            return ContaminationResult(
+                True, f"describes {handle} ({', '.join(toks)}), not {own_handle}"
+            )
+    return ContaminationResult(False)
+
+
 def detect_foreign_product_ids(
     value: str, own_product_id: str, known_product_ids: frozenset[str]
 ) -> ContaminationResult:
-    """Flag bare numeric ids belonging to other products in the same store.
-
-    Kept separate from `detect_contamination` because it needs the full id set, which
-    is only available once the whole catalogue is fetched.
-    """
     if not value:
         return ContaminationResult(False)
     own_id = str(own_product_id).rsplit("/", 1)[-1]

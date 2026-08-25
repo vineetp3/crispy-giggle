@@ -32,10 +32,6 @@ def ensure_dirs(store: StoreConfig) -> None:
     store.pages_dir.mkdir(parents=True, exist_ok=True)
 
 
-# --------------------------------------------------------------------------- #
-# jsonl
-# --------------------------------------------------------------------------- #
-
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
@@ -63,10 +59,6 @@ def load_products(store: StoreConfig) -> list[dict[str, Any]]:
     return list(read_jsonl(store.api_path))
 
 
-# --------------------------------------------------------------------------- #
-# json
-# --------------------------------------------------------------------------- #
-
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -77,10 +69,6 @@ def read_json(path: Path) -> Any:
         raise FileNotFoundError(f"missing artefact: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
 
-
-# --------------------------------------------------------------------------- #
-# pages
-# --------------------------------------------------------------------------- #
 
 def page_paths(store: StoreConfig, handle: str) -> tuple[Path, Path]:
     return store.pages_dir / f"{handle}.html", store.pages_dir / f"{handle}.md"
@@ -107,12 +95,7 @@ def crawled_handles(store: StoreConfig) -> list[str]:
     return sorted(p.stem for p in store.pages_dir.glob("*.html"))
 
 
-# --------------------------------------------------------------------------- #
-# manifest
-# --------------------------------------------------------------------------- #
-
 def record_stage(store: StoreConfig, stage: str, detail: dict[str, Any]) -> None:
-    """Append a stage record to the store's run manifest, with the resolved config."""
     manifest: dict[str, Any] = {}
     if store.manifest_path.exists():
         manifest = read_json(store.manifest_path)

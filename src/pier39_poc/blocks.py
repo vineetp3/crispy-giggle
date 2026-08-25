@@ -27,8 +27,6 @@ _COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
 _TAG_RE = re.compile(r"(?s)<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
-# Templated widget text. Unique per review/item, so it never repeats across pages and
-# differencing cannot remove it. Observed on Okendo and Loox widgets.
 NOISE_PATTERNS = (
     r"^(Yes|No), this review from .+ was (not )?helpful\.?$",
     r"^\d*\s*(person|people) voted (yes|no)$",
@@ -49,7 +47,6 @@ _NOISE_RE = tuple(re.compile(p) for p in NOISE_PATTERNS)
 
 
 def visible_text(raw_html: str) -> str:
-    """Strip scripts/styles/comments/tags and normalise whitespace."""
     h = _DROP_RE.sub(" ", raw_html)
     h = _COMMENT_RE.sub(" ", h)
     h = _TAG_RE.sub(" ", h)
@@ -57,11 +54,6 @@ def visible_text(raw_html: str) -> str:
 
 
 def extract_blocks(raw_html: str, min_chars: int = 3) -> list[str]:
-    """Split a page into ordered text runs.
-
-    Runs are delimited by tag boundaries, which keeps `<strong>Material:</strong> BPA-free`
-    as two adjacent blocks -- that adjacency is how labels get recovered later.
-    """
     h = _DROP_RE.sub(" ", raw_html)
     h = _COMMENT_RE.sub(" ", h)
     out: list[str] = []
@@ -78,7 +70,6 @@ def is_noise(block: str) -> bool:
 
 @dataclass
 class ChromeProfile:
-    """Which blocks are site chrome, derived from a sample of pages."""
 
     chrome: frozenset[str]
     page_count: int
@@ -86,7 +77,6 @@ class ChromeProfile:
     frequency: dict[str, int] = field(default_factory=dict)
 
     def histogram(self) -> dict[int, int]:
-        """distinct-block count keyed by 'appeared on N pages'."""
         hist: Counter[int] = Counter()
         for count in self.frequency.values():
             hist[count] += 1
@@ -96,11 +86,6 @@ class ChromeProfile:
 def build_chrome_profile(
     pages: dict[str, list[str]], threshold: float = 0.8
 ) -> ChromeProfile:
-    """Count block frequency across pages and mark the frequent ones as chrome.
-
-    `pages` maps a page key (product handle) to its ordered blocks. Each block is counted
-    once per page, so repetition within a page does not inflate its frequency.
-    """
     if not pages:
         return ChromeProfile(frozenset(), 0, threshold, {})
 
@@ -120,12 +105,6 @@ def product_region(
     foreign_titles: frozenset[str] = frozenset(),
     drop_noise: bool = True,
 ) -> list[str]:
-    """Strip chrome, templated widget noise, and sibling product titles.
-
-    `foreign_titles` are the titles of *other* products in the same store, lowercased.
-    The variant/flavour selector lists them and it varies per page, so differencing
-    cannot remove it -- but the catalogue is already known from the API.
-    """
     out: list[str] = []
     for b in blocks:
         if b in profile.chrome:
@@ -138,21 +117,42 @@ def product_region(
     return out
 
 
-def label_for(blocks: list[str], index: int, max_chars: int = 60) -> str | None:
-    """Recover the label rendered immediately before a value.
+NOT_A_LABEL_PATTERNS = (
+    r"^(sold out|out of stock|in stock|bonus|new|sale|free)$",
+    r"^(read|learn|shop|see|view|buy|add|get|save|try)\b",
+    r"^(select|choose|pick|enter|search|filter|sort|quantity|qty)\b",
+    r"^[$£€]",
+    r"^\d",
+    r"^/",
+    r"%",
+    r"\bper (bar|box|pack|unit|serving)\b",
+)
+_NOT_A_LABEL_RE = tuple(re.compile(p, re.IGNORECASE) for p in NOT_A_LABEL_PATTERNS)
 
-    `<strong>Material:</strong> BPA-free, food-safe plastic` yields "Material".
-    This is the only source of human-readable names for opaque keys such as
-    `custom.product_blue_content`; the Admin API never provides them.
-    """
+MAX_LABEL_WORDS = 4
+
+
+def looks_like_label(text: str) -> bool:
+    return not any(r.search(text) for r in _NOT_A_LABEL_RE)
+
+
+def label_for(
+    blocks: list[str], index: int, max_chars: int = 60
+) -> tuple[str, bool] | None:
     if index <= 0:
         return None
     candidate = blocks[index - 1].strip()
     if not candidate or len(candidate) > max_chars:
         return None
     if candidate.endswith(":"):
-        return candidate[:-1].strip() or None
-    # Short title-ish run with no sentence punctuation also reads as a label.
-    if len(candidate.split()) <= 4 and not candidate.endswith((".", "!", "?", ",")):
-        return candidate
+        stripped = candidate[:-1].strip()
+        if not stripped or len(stripped.split()) > MAX_LABEL_WORDS:
+            return None
+        return (stripped, True) if looks_like_label(stripped) else None
+    if (
+        len(candidate.split()) <= MAX_LABEL_WORDS
+        and not candidate.endswith((".", "!", "?", ","))
+        and looks_like_label(candidate)
+    ):
+        return (candidate, False)
     return None

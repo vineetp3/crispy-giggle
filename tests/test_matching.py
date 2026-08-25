@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pier39_poc.blocks import extract_blocks, visible_text
+from pier39_poc.blocks import visible_text
 from pier39_poc.matching import (
     PageIndex,
     candidates,
@@ -15,7 +15,6 @@ from pier39_poc.matching import (
     detect_foreign_product_ids,
     is_reference_type,
     match_candidate,
-    tokens,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "skout"
@@ -125,10 +124,21 @@ def test_threshold_is_respected(page):
 
 
 def test_two_token_candidate_requires_proximity(page):
-    """`calories` and `110` both appear on the page; scattered tokens must not match."""
-    assert match_candidate("Calories [110]", page).reason == "ok_proximity"
-    # Two tokens that exist on the page but never adjacently.
+    assert match_candidate("Calories [110]", page).matched
     assert not match_candidate("Hazelnuts Poppyseed", page).matched
+
+
+def test_long_candidate_requires_locality(page):
+    """A page-wide bag-of-words match is not a render signal.
+
+    Every token below is on the page; none of it is on the page as a run. Before the
+    locality gate this scored 0.83 and promoted unrendered LLM enrichment to quotable.
+    """
+    scattered = (
+        "peanut butter cookies organic soft baked chocolate treats suitable "
+        "brands contrast discount referral credits"
+    )
+    assert not match_candidate(scattered, page).matched
 
 
 # --------------------------------------------------------------------------- #
@@ -200,3 +210,133 @@ def test_own_handle_url_is_not_contamination():
     value = f"//www.skoutorganic.com/products/{handle}"
     r = detect_contamination(value, SKOUT_PB_ID, handle, frozenset({handle}))
     assert not r.contaminated
+
+
+def test_rich_text_ast_keys_are_not_content():
+    """`type` values are structure, not text.
+
+    A generic string-leaf walk harvested "root"/"paragraph"/"text" as candidates, which
+    polluted every embedded document and made cands[0] identical across all products.
+    """
+    raw = (
+        '{"type":"root","children":[{"type":"paragraph","children":['
+        '{"type":"text","value":"ONLY 5 SIMPLE INGREDIENTS! ","bold":true},'
+        '{"type":"text","value":"Think apple-orchard air."}]}]}'
+    )
+    got = candidates("rich_text_field", raw)
+    assert not {"root", "paragraph", "text"} & set(got), got
+    assert got == ["ONLY 5 SIMPLE INGREDIENTS! Think apple-orchard air."]
+
+
+def test_json_metafield_keeps_keyed_attributes():
+    raw = '{"Best For":"school lunches","Storage & Freshness":"keep sealed"}'
+    got = candidates("json", raw)
+    assert "Best For" in got and "school lunches" in got
+
+
+def test_commerce_facts_are_rejected_but_ratings_are_not():
+    """Bare numbers are not commerce facts.
+
+    `reviews.rating` is 4.8 and `reviews.rating_count` is 72; rejecting those as commerce
+    would discard review data the conflict rule in `merge` already handles. Every price
+    field observed on either store names itself, so the key stem carries those.
+    """
+    from pier39_poc.profile import is_commerce_fact
+
+    commerce = [
+        ("custom", "current_price", "string", ["55.00"]),
+        ("custom", "banner_pricing", "number_decimal", ["55.0"]),
+        ("custom", "yellow_badge_save_amount", "string", ["$55.00"]),
+        ("custom", "price_promotion_text", "string", ["50% Off"]),
+        ("custom", "amount_saved_purchasing_subscription", "number_decimal", ["108.0"]),
+        ("shop", "anything", "money", ["12.00"]),
+    ]
+    for ns, key, mf_type, values in commerce:
+        assert is_commerce_fact(ns, key, mf_type, values), f"{ns}.{key}"
+
+    keep = [
+        ("custom", "nutrients", "list.single_line_text_field", ["Protein [1g]"]),
+        ("filter", "ingredients", "list.single_line_text_field", ["Organic Date Syrup"]),
+        ("reviews", "rating", "rating", ["4.8"]),
+        ("reviews", "rating_count", "number_integer", ["72"]),
+        ("loox", "avg_rating", "string", ["3.8"]),
+        ("filter", "contains", "list.single_line_text_field", ["Almonds"]),
+    ]
+    for ns, key, mf_type, values in keep:
+        assert not is_commerce_fact(ns, key, mf_type, values), f"{ns}.{key}"
+
+
+def test_abandoned_skus_are_not_selectable():
+    """Published is not buyable. `sellable` missing means sellable (pre-verdict data)."""
+    from pier39_poc.crawl import selectable
+
+    products = [
+        {"handle": "live", "online_store_url": "https://x/products/live", "sellable": True},
+        {"handle": "dead", "online_store_url": "https://x/products/dead", "sellable": False},
+        {"handle": "unpublished", "online_store_url": None, "sellable": True},
+        {"handle": "legacy", "online_store_url": "https://x/products/legacy"},
+    ]
+    assert [p["handle"] for p in selectable(products)] == ["live", "legacy"]
+
+
+def test_foreign_title_catches_text_only_contamination():
+    """The case DESIGN.md 10 recorded as undetectable.
+
+    skout's peanut-butter cookie carries apple-pie copy with no product id, gid or URL
+    in it, so neither contamination rule can see it.
+    """
+    from pier39_poc.matching import (
+        detect_foreign_product_title,
+        distinctive_title_tokens,
+    )
+
+    # Enough of the catalogue that "skout", "organic", "kids" and "bar" are common and
+    # therefore not distinctive, which is what makes "apple pie" a product identity.
+    titles = {
+        "skout-organic-peanut-butter-soft-baked-cookies": "Skout Organic Peanut Butter Soft Baked Cookies",
+        "apple-pie-organic-kids-snack-bars": "Skout Organic Apple Pie Kids Bar",
+        "blueberry-blast-kids-bar": "Skout Organic Blueberry Blast Kids Bar",
+        "lemon-zest-protein-bar": "Skout Organic Lemon Zest Protein Bar",
+        "mango-mayhem-kids-bar": "Skout Organic Mango Mayhem Kids Bar",
+        "double-chocolate-cookies": "Skout Organic Double Chocolate Soft Baked Cookies",
+        "oatmeal-raisin-cookies": "Skout Organic Oatmeal Raisin Soft Baked Cookies",
+    }
+    dist = distinctive_title_tokens(titles)
+    assert dist["apple-pie-organic-kids-snack-bars"] == ("apple", "pie")
+    value = (
+        "No Thanksgiving necessary. This bar will curb your cravings for Grandma's "
+        "apple pie 365 days a year. We blended five ingredients to craft the perfect "
+        "taste and texture for you and your family."
+    )
+    got = detect_foreign_product_title(
+        value, "skout-organic-peanut-butter-soft-baked-cookies", dist
+    )
+    assert got.contaminated, got
+
+    own = "Peanut butter cookies made with organic peanut butter and a pinch of salt for contrast every time"
+    assert not detect_foreign_product_title(
+        own, "skout-organic-peanut-butter-soft-baked-cookies", dist
+    ).contaminated
+
+
+def test_foreign_title_ignores_sku_format_names_and_short_values():
+    from pier39_poc.matching import (
+        detect_foreign_product_title,
+        distinctive_title_tokens,
+    )
+
+    titles = {
+        "chocolate-banana-kids-bar": "Skout Organic Chocolate Banana Kids Bar",
+        "skout-organic-kids-bar-bundle-pack": "Skout Organic Kids Bar Small Batch Bundle Pack",
+    }
+    dist = distinctive_title_tokens(titles)
+    prose = (
+        "Our newest limited run is here. This is a small batch flavour we make once a "
+        "year and it always sells out before the season ends, so grab one early."
+    )
+    assert not detect_foreign_product_title(
+        prose, "chocolate-banana-kids-bar", dist
+    ).contaminated
+    assert not detect_foreign_product_title(
+        "Small Batch", "chocolate-banana-kids-bar", dist
+    ).contaminated

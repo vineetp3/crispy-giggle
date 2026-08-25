@@ -16,8 +16,18 @@ Two calls per store:
 product is not published to the online store channel. No URL is ever built by string
 concatenation.
 
-Price and inventory are deliberately NOT selected here. They are read live at query
-time via `fetch_live_variants`.
+Price and inventory are deliberately NOT selected in the catalogue query and are never
+stored. `sellability` reads them and returns one derived boolean per product, which is a
+verdict rather than a commerce fact -- no amount or quantity is retained.
+
+That verdict is needed because `status:active` plus a non-null `onlineStoreUrl` does not
+mean buyable. 17% of skout's published catalogue is abandoned records: `price` 0.00 with
+`inventoryQuantity` at -770, -101, -14, several shadowing a live twin under a legacy
+handle. They are 40% of a sampled candidate pool if left in.
+
+Do NOT use negative inventory as the signal. remi has 23 of 30 products at negative
+quantity and all 30 are buyable, because that store runs continue-selling. Only
+"no variant priced above zero AND no variant available" holds across both stores.
 """
 
 from __future__ import annotations
@@ -66,8 +76,6 @@ query Products($cursor: String) {
 }
 """
 
-# templateSuffix is unverified against a live schema (see DESIGN.md 10). This variant
-# drops it so a schema error does not block the whole fetch.
 PRODUCTS_QUERY_NO_TEMPLATE = PRODUCTS_QUERY.replace("      templateSuffix\n", "")
 
 DEFINITIONS_QUERY = """
@@ -75,6 +83,19 @@ query Definitions($cursor: String) {
   metafieldDefinitions(ownerType: PRODUCT, first: 250, after: $cursor) {
     pageInfo { hasNextPage endCursor }
     nodes { id name namespace key description type { name } }
+  }
+}
+"""
+
+SELLABILITY_QUERY = """
+query Sellability($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on ProductVariant {
+      id
+      availableForSale
+      price
+      product { id }
+    }
   }
 }
 """
@@ -103,7 +124,6 @@ class ShopifyError(RuntimeError):
 
 @dataclass
 class Throttle:
-    """Observed cost from the last response, for logging and adaptive backoff."""
 
     requested: int = 0
     actual: int = 0
@@ -111,7 +131,7 @@ class Throttle:
     restore_rate: float = 0.0
 
     @classmethod
-    def from_extensions(cls, ext: dict[str, Any] | None) -> "Throttle":
+    def from_extensions(cls, ext: dict[str, Any] | None) -> Throttle:
         cost = (ext or {}).get("cost") or {}
         status = cost.get("throttleStatus") or {}
         return cls(
@@ -139,7 +159,7 @@ class AdminClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "AdminClient":
+    def __enter__(self) -> AdminClient:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -193,7 +213,6 @@ class AdminClient:
             raise ShopifyError(f"{self.store.slug}: response had no data block")
         return data
 
-    # ----------------------------------------------------------------- #
 
     def metafield_definitions(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -207,7 +226,6 @@ class AdminClient:
             cursor = block["pageInfo"]["endCursor"]
 
     def products(self) -> Iterator[dict[str, Any]]:
-        """Yield every active product. Falls back if templateSuffix is unsupported."""
         query = PRODUCTS_QUERY
         cursor: str | None = None
         while True:
@@ -225,8 +243,31 @@ class AdminClient:
                 return
             cursor = block["pageInfo"]["endCursor"]
 
+    def sellability(self, products: list[dict[str, Any]]) -> dict[str, bool]:
+        by_variant: dict[str, str] = {}
+        for product in products:
+            for variant in product.get("variants") or []:
+                if variant.get("id"):
+                    by_variant[variant["id"]] = str(product["product_id"])
+        verdict = dict.fromkeys(by_variant.values(), False)
+        gids = list(by_variant)
+        for start in range(0, len(gids), 50):
+            data = self.execute(SELLABILITY_QUERY, {"ids": gids[start : start + 50]})
+            for node in data.get("nodes") or []:
+                if not node or not node.get("id"):
+                    continue
+                pid = by_variant.get(node["id"])
+                if pid is None:
+                    continue
+                try:
+                    priced = float(node.get("price") or 0) > 0
+                except (TypeError, ValueError):
+                    priced = False
+                if priced or node.get("availableForSale"):
+                    verdict[pid] = True
+        return verdict
+
     def fetch_live_variants(self, variant_gids: list[str]) -> dict[str, dict[str, Any]]:
-        """Live price, inventory and availability. The only place these are read."""
         if not variant_gids:
             return {}
         data = self.execute(LIVE_VARIANTS_QUERY, {"ids": variant_gids})
@@ -237,8 +278,79 @@ class AdminClient:
         return out
 
 
+STOREFRONT_VARIANTS_QUERY = """
+query LiveVariants($ids: [ID!]!, $country: CountryCode!) @inContext(country: $country) {
+  nodes(ids: $ids) {
+    ... on ProductVariant {
+      id
+      title
+      sku
+      availableForSale
+      quantityAvailable
+      price { amount currencyCode }
+      compareAtPrice { amount currencyCode }
+      product { id handle title }
+    }
+  }
+}
+"""
+
+
+class StorefrontClient:
+
+    def __init__(self, store: StoreConfig, token: str, timeout: float = 20.0):
+        self.store = store
+        self.url = store.storefront_url()
+        self._client = httpx.Client(
+            timeout=timeout,
+            headers={
+                "X-Shopify-Storefront-Access-Token": token,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> StorefrontClient:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def fetch_live_variants(self, variant_gids: list[str]) -> dict[str, dict[str, Any]]:
+        if not variant_gids:
+            return {}
+        response = self._client.post(
+            self.url,
+            json={
+                "query": STOREFRONT_VARIANTS_QUERY,
+                "variables": {
+                    "ids": variant_gids,
+                    "country": self.store.market_country,
+                },
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("errors"):
+            raise ShopifyError(f"{self.store.slug} storefront: {payload['errors']}")
+        out: dict[str, dict[str, Any]] = {}
+        for node in (payload.get("data") or {}).get("nodes") or []:
+            if not node or not node.get("id"):
+                continue
+            out[node["id"]] = {
+                **node,
+                "price": (node.get("price") or {}).get("amount"),
+                "currency": (node.get("price") or {}).get("currencyCode"),
+                "compareAtPrice": (node.get("compareAtPrice") or {}).get("amount"),
+                "inventoryQuantity": node.get("quantityAvailable"),
+            }
+        return out
+
+
 def flatten_product(node: dict[str, Any]) -> dict[str, Any]:
-    """Collapse GraphQL connection wrappers into plain lists."""
     return {
         "id": node["id"],
         "product_id": str(node["id"]).rsplit("/", 1)[-1],

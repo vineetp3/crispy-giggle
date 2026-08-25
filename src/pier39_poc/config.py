@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ DEFAULT_CONFIG = REPO_ROOT / "config" / "stores.yaml"
 DATA_ROOT = REPO_ROOT / "data"
 
 TOKENS_ENV = "PIER39_SHOPIFY_TOKENS"
+STOREFRONT_TOKENS_ENV = "PIER39_SHOPIFY_STOREFRONT_TOKENS"
 
 CRAWL_SCOPES = ("none", "sample", "template_representatives", "all")
 SAMPLING_MODES = ("by_template", "by_product_type", "random", "first_n", "explicit")
@@ -57,6 +58,9 @@ class StoreConfig:
     allowlist_min_support: int = 3
     allowlist_min_hit_rate: float = 0.8
 
+    storefront_api_version: str = "2026-01"
+    market_country: str = "US"
+
     embedding_model: str = "text-embedding-3-large"
     embedding_dimensions: int = 1024
     rerank_model: str = "rerank-v4.0-fast"
@@ -71,7 +75,6 @@ class StoreConfig:
         if not 0.0 < self.chrome_threshold <= 1.0:
             raise ConfigError(f"{self.slug}: chrome_threshold must be in (0, 1]")
         if self.chrome_threshold >= 1.0:
-            # Not fatal, but it is the documented failure mode; make it loud.
             raise ConfigError(
                 f"{self.slug}: chrome_threshold of 1.0 leaks store-wide sections into "
                 "every product region. See DESIGN.md 5.3. Use 0.8."
@@ -113,6 +116,9 @@ class StoreConfig:
     def graphql_url(self) -> str:
         return f"https://{self.domain}/admin/api/{self.admin_api_version}/graphql.json"
 
+    def storefront_url(self) -> str:
+        return f"https://{self.domain}/api/{self.storefront_api_version}/graphql.json"
+
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -124,7 +130,6 @@ def load_env() -> None:
 def load_stores(
     config_path: Path | None = None, only: str | None = None
 ) -> list[StoreConfig]:
-    """Merge defaults into each store block. `only` overrides the enabled flag."""
     path = config_path or DEFAULT_CONFIG
     if not path.exists():
         raise ConfigError(f"missing config file: {path}")
@@ -160,7 +165,6 @@ def load_stores(
 
 
 def token_for(slug: str) -> str:
-    """Read one store's admin token out of the JSON blob env var."""
     blob = os.environ.get(TOKENS_ENV)
     if not blob:
         raise ConfigError(
@@ -179,6 +183,20 @@ def token_for(slug: str) -> str:
             f"Available: {sorted(tokens)}"
         )
     return str(token)
+
+
+def storefront_token_for(slug: str) -> str | None:
+    blob = os.environ.get(STOREFRONT_TOKENS_ENV)
+    if not blob:
+        return None
+    try:
+        tokens = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(tokens, dict):
+        return None
+    token = tokens.get(slug)
+    return token if isinstance(token, str) and token else None
 
 
 def require_env(name: str) -> str:

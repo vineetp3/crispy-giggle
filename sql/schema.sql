@@ -77,16 +77,23 @@ CREATE TABLE IF NOT EXISTS template_constants (
     UNIQUE (store_id, template_key, value_hash)
 );
 
+-- trust_class lives on the chunk, not only on field_assertions: `text` is what an
+-- answer layer receives, so the class has to travel with it.
 CREATE TABLE IF NOT EXISTS documents (
-    id          bigserial PRIMARY KEY,
-    product_id  bigint NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    chunk_key   text NOT NULL DEFAULT 'main',
-    text        text NOT NULL,
-    text_hash   text NOT NULL,
-    embedding   vector(1024),
-    tsv         tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+    id           bigserial PRIMARY KEY,
+    product_id   bigint NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    chunk_key    text NOT NULL DEFAULT 'main',
+    trust_class  text NOT NULL DEFAULT 'retrieval'
+        CHECK (trust_class IN ('retrieval', 'quotable')),
+    text         text NOT NULL,
+    text_hash    text NOT NULL,
+    embedding    vector(1024),
+    tsv          tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
     UNIQUE (product_id, chunk_key)
 );
+
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS trust_class text
+    NOT NULL DEFAULT 'retrieval';
 
 CREATE INDEX IF NOT EXISTS documents_tsv_idx ON documents USING gin (tsv);
 -- Operator class is chosen after measuring whether OpenAI returns unit-normalised

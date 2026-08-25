@@ -1,16 +1,32 @@
 """Hybrid retrieval: vector + lexical, fused, filtered in SQL, then reranked.
 
-Four stages, in this order for a reason:
+Gotchas:
 
-1. embed the query
-2. two first-stage retrievers over the same table, fused with reciprocal rank fusion.
-   The lexical leg catches exact terms -- a brand, a SKU, "poppyseed" -- that
-   embeddings miss.
-3. constraints as SQL WHERE clauses. Negation is handled HERE. "cookies without
-   peanuts" must not be left to cosine similarity, which routinely retrieves the thing
-   you excluded.
-4. rerank with a cross-encoder, then one live Admin call for price and stock on the
-   survivors.
+Negation is a WHITELIST JOIN, not an exclusion scan, and must never be relaxed back.
+`free_from` (Shopify's `filter.contains`) is a positive declaration of what a product is
+free of, so "tree nut free" means *require* a declaration naming each excluded term. The
+previous exclusion scan removed only products whose prose mentioned the term, which let
+30 of skout's 182 published products through with no declaration at all, and could not
+tell "contains peanuts" from "does not process peanuts". A product with no declaration is
+not an answer to a negation query.
+
+Matching is substring (`ILIKE '%term%'`) on purpose: the shopper says `almond`, the data
+says `Almonds`. A word-boundary match fails on the plural. The cost is that a short term
+like `nut` also matches `Coconut`, so callers should pass specific allergen names.
+
+The `%s IS NULL` casts in the retrieval legs are load-bearing. Postgres has nothing to
+infer the parameter type from without them and the query fails with IndeterminateDatatype.
+
+`trust_class` travels on the chunk so a caller can retrieve over everything and ground on
+quotable text only. Ordering by it is not enough -- a mixed string carries no marker.
+
+Commerce constraints are applied AFTER the live read, not as SQL. Price and stock are never
+stored, so there is no column to filter on -- DESIGN.md 5.5 and 5.6 previously asked for
+both at once. The live read therefore has to happen before the filter and before the
+rerank, which is why the stage order is retrieve -> SQL filter -> live -> commerce filter
+-> rerank rather than the reverse. This holds because the corpus is a few hundred products
+per store; past roughly tens of thousands, a cached price band with an explicit TTL becomes
+unavoidable.
 """
 
 from __future__ import annotations
@@ -19,11 +35,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import db
-from .config import StoreConfig, token_for
+from .config import StoreConfig, load_stores, storefront_token_for, token_for
 from .embeddings import Embedder
+from .matching import FREE_FROM_FIELD
 
 RRF_K = 60
-FIRST_STAGE_LIMIT = 50
+FIRST_STAGE_LIMIT = 200
+LIVE_READ_LIMIT = 60
 
 
 @dataclass
@@ -34,6 +52,7 @@ class Hit:
     store_slug: str
     online_store_url: str | None
     chunk_key: str
+    trust_class: str
     text: str
     vector_rank: int | None = None
     lexical_rank: int | None = None
@@ -42,30 +61,32 @@ class Hit:
     matched_fields: list[dict[str, Any]] = field(default_factory=list)
     live: dict[str, Any] | None = None
 
+    @property
+    def groundable(self) -> bool:
+        return self.trust_class == "quotable"
+
 
 def _rrf(rank: int | None) -> float:
     return 0.0 if rank is None else 1.0 / (RRF_K + rank)
 
 
 def vector_literal(vector: list[float]) -> str:
-    """pgvector's text input form.
-
-    Passed as a string with an explicit `::vector` cast rather than relying on a list
-    adapter, so this works without registering the pgvector type on the connection.
-    """
     return "[" + ",".join(repr(float(v)) for v in vector) + "]"
 
 
-# `%s IS NULL` gives Postgres nothing to infer the parameter type from, so the casts
-# below are load-bearing: without them the query fails with IndeterminateDatatype.
+_SELECT = """
+    SELECT d.product_id, d.chunk_key, d.trust_class, d.text, p.handle, p.title,
+           p.online_store_url, s.slug
+    FROM documents d
+    JOIN products p ON p.id = d.product_id
+    JOIN stores s ON s.id = p.store_id
+"""
+
+
 def _vector_leg(conn, query_vector: list[float], slug: str | None, limit: int) -> list[dict]:
     return conn.execute(
-        """
-        SELECT d.product_id, d.chunk_key, d.text, p.handle, p.title,
-               p.online_store_url, s.slug
-        FROM documents d
-        JOIN products p ON p.id = d.product_id
-        JOIN stores s ON s.id = p.store_id
+        _SELECT
+        + """
         WHERE d.embedding IS NOT NULL
           AND (%(slug)s::text IS NULL OR s.slug = %(slug)s::text)
         ORDER BY d.embedding <=> %(vec)s::vector
@@ -77,12 +98,8 @@ def _vector_leg(conn, query_vector: list[float], slug: str | None, limit: int) -
 
 def _lexical_leg(conn, query: str, slug: str | None, limit: int) -> list[dict]:
     return conn.execute(
-        """
-        SELECT d.product_id, d.chunk_key, d.text, p.handle, p.title,
-               p.online_store_url, s.slug
-        FROM documents d
-        JOIN products p ON p.id = d.product_id
-        JOIN stores s ON s.id = p.store_id
+        _SELECT
+        + """
         WHERE d.tsv @@ websearch_to_tsquery('english', %(q)s)
           AND (%(slug)s::text IS NULL OR s.slug = %(slug)s::text)
         ORDER BY ts_rank(d.tsv, websearch_to_tsquery('english', %(q)s)) DESC
@@ -92,27 +109,37 @@ def _lexical_leg(conn, query: str, slug: str | None, limit: int) -> list[dict]:
     ).fetchall()
 
 
-def _exclude_by_allergen(conn, product_ids: list[int], exclude: list[str]) -> set[int]:
-    """Products whose own content asserts a term the shopper excluded.
-
-    This is the negation path. `filter.contains` on skout lists allergens the product
-    does NOT contain, so it must not be read as a positive assertion -- only fields
-    naming the term as an ingredient count.
-    """
-    if not product_ids or not exclude:
-        return set()
+def declared_free_from(conn, product_ids: list[int], exclude: list[str]) -> set[int]:
+    terms = sorted({t.strip().lower() for t in exclude if t.strip()})
+    if not product_ids or not terms:
+        return set(product_ids)
     rows = conn.execute(
         """
-        SELECT DISTINCT product_id
-        FROM field_assertions
-        WHERE product_id = ANY(%s)
-          AND field NOT LIKE '%%contains%%'
-          AND field NOT LIKE '%%free%%'
-          AND value ILIKE ANY(%s)
+        SELECT fa.product_id, count(DISTINCT t.term) AS declared
+        FROM field_assertions fa
+        CROSS JOIN unnest(%(terms)s::text[]) AS t(term)
+        WHERE fa.product_id = ANY(%(ids)s)
+          AND fa.field = %(field)s
+          AND fa.value ILIKE '%%' || t.term || '%%'
+        GROUP BY fa.product_id
         """,
-        (product_ids, [f"%{term}%" for term in exclude]),
+        {"terms": terms, "ids": product_ids, "field": FREE_FROM_FIELD},
     ).fetchall()
-    return {int(r["product_id"]) for r in rows}
+    return {int(r["product_id"]) for r in rows if int(r["declared"]) == len(terms)}
+
+
+def _hit_from_row(row: dict[str, Any], **ranks: int) -> Hit:
+    return Hit(
+        product_id=row["product_id"],
+        handle=row["handle"],
+        title=row["title"],
+        store_slug=row["slug"],
+        online_store_url=row["online_store_url"],
+        chunk_key=row["chunk_key"],
+        trust_class=row["trust_class"],
+        text=row["text"],
+        **ranks,
+    )
 
 
 def search(
@@ -123,6 +150,8 @@ def search(
     exclude_terms: list[str] | None = None,
     rerank: bool = True,
     live_prices: bool = True,
+    max_price: float | None = None,
+    in_stock_only: bool = False,
 ) -> list[Hit]:
     embedder = Embedder(store.embedding_model, store.embedding_dimensions)
     query_vector = embedder.embed_one(query)
@@ -131,33 +160,14 @@ def search(
 
     with db.connect() as conn:
         for rank, row in enumerate(_vector_leg(conn, query_vector, slug, FIRST_STAGE_LIMIT), 1):
-            key = (row["product_id"], row["chunk_key"])
-            hits[key] = Hit(
-                product_id=row["product_id"],
-                handle=row["handle"],
-                title=row["title"],
-                store_slug=row["slug"],
-                online_store_url=row["online_store_url"],
-                chunk_key=row["chunk_key"],
-                text=row["text"],
-                vector_rank=rank,
-            )
+            hits[(row["product_id"], row["chunk_key"])] = _hit_from_row(row, vector_rank=rank)
 
         for rank, row in enumerate(_lexical_leg(conn, query, slug, FIRST_STAGE_LIMIT), 1):
             key = (row["product_id"], row["chunk_key"])
             if key in hits:
                 hits[key].lexical_rank = rank
             else:
-                hits[key] = Hit(
-                    product_id=row["product_id"],
-                    handle=row["handle"],
-                    title=row["title"],
-                    store_slug=row["slug"],
-                    online_store_url=row["online_store_url"],
-                    chunk_key=row["chunk_key"],
-                    text=row["text"],
-                    lexical_rank=rank,
-                )
+                hits[key] = _hit_from_row(row, lexical_rank=rank)
 
         for hit in hits.values():
             hit.rrf = _rrf(hit.vector_rank) + _rrf(hit.lexical_rank)
@@ -165,20 +175,30 @@ def search(
         ranked = sorted(hits.values(), key=lambda h: h.rrf, reverse=True)
 
         if exclude_terms:
-            banned = _exclude_by_allergen(
+            allowed = declared_free_from(
                 conn, [h.product_id for h in ranked], exclude_terms
             )
-            ranked = [h for h in ranked if h.product_id not in banned]
+            ranked = [h for h in ranked if h.product_id in allowed]
+
+        filtering = max_price is not None or in_stock_only
+        if filtering and ranked:
+            ranked = ranked[:LIVE_READ_LIMIT]
+            _attach_live(conn, ranked)
+            ranked = [h for h in ranked if _passes_commerce(h, max_price, in_stock_only)]
 
         if rerank and ranked:
             ranked = _rerank(query, ranked, store.rerank_model)
 
         ranked = ranked[:top_k]
 
+        if live_prices and ranked and not filtering:
+            _attach_live(conn, ranked)
+
         for hit in ranked:
             rows = conn.execute(
                 """
-                SELECT field, label, value, source, source_kind, trust_class, rendered
+                SELECT field, label, value, source, source_kind, trust_class,
+                       rendered, source_updated_at
                 FROM field_assertions
                 WHERE product_id = %s
                 ORDER BY (trust_class = 'quotable') DESC, field
@@ -188,14 +208,23 @@ def search(
             ).fetchall()
             hit.matched_fields = [dict(r) for r in rows]
 
-        if live_prices and ranked:
-            _attach_live(conn, ranked, store)
-
     return ranked
 
 
+def _passes_commerce(hit: Hit, max_price: float | None, in_stock_only: bool) -> bool:
+    live = hit.live
+    if not live:
+        return False
+    if in_stock_only and not live.get("available"):
+        return False
+    if max_price is not None:
+        low = live.get("min_price")
+        if low is None or float(low) > max_price:
+            return False
+    return True
+
+
 def _rerank(query: str, hits: list[Hit], model: str) -> list[Hit]:
-    """Cross-encoder rerank. Degrades to the fused order if the call fails."""
     try:
         import cohere
 
@@ -216,37 +245,42 @@ def _rerank(query: str, hits: list[Hit], model: str) -> list[Hit]:
         return hits
 
 
-def _attach_live(conn, hits: list[Hit], store: StoreConfig) -> None:
-    """The only place price, inventory and availability are read. Never stored."""
-    from .shopify_api import AdminClient
+def _attach_live(conn, hits: list[Hit]) -> None:
+    from .shopify_api import AdminClient, StorefrontClient
+
+    configs = {s.slug: s for s in load_stores()}
 
     by_slug: dict[str, list[Hit]] = {}
     for hit in hits:
         by_slug.setdefault(hit.store_slug, []).append(hit)
 
     for slug, slug_hits in by_slug.items():
-        product_ids = [h.product_id for h in slug_hits]
+        target = configs.get(slug)
+        if target is None:
+            continue
         rows = conn.execute(
             """
             SELECT v.product_id, v.shopify_variant_id
             FROM variants v
             WHERE v.product_id = ANY(%s)
             """,
-            (product_ids,),
+            ([h.product_id for h in slug_hits],),
         ).fetchall()
         if not rows:
             continue
 
+        storefront = storefront_token_for(slug)
         gids = [r["shopify_variant_id"] for r in rows]
+        live: dict[str, dict[str, Any]] = {}
         try:
-            token = token_for(slug)
-        except Exception:
-            continue
-
-        target = store if store.slug == slug else store
-        try:
-            with AdminClient(target, token) as client:
-                live = client.fetch_live_variants(gids[:50])
+            if storefront:
+                with StorefrontClient(target, storefront) as client:
+                    for start in range(0, len(gids), 50):
+                        live.update(client.fetch_live_variants(gids[start : start + 50]))
+            else:
+                with AdminClient(target, token_for(slug)) as client:
+                    for start in range(0, len(gids), 50):
+                        live.update(client.fetch_live_variants(gids[start : start + 50]))
         except Exception:
             continue
 
@@ -260,11 +294,14 @@ def _attach_live(conn, hits: list[Hit], store: StoreConfig) -> None:
             variants = by_product.get(hit.product_id) or []
             if not variants:
                 continue
-            available = [v for v in variants if v.get("availableForSale")]
-            prices = [float(v["price"]) for v in variants if v.get("price") is not None]
+            prices = [
+                float(v["price"])
+                for v in variants
+                if v.get("price") is not None and float(v["price"]) > 0
+            ]
             hit.live = {
                 "variants": len(variants),
-                "available": len(available),
+                "available": len([v for v in variants if v.get("availableForSale")]),
                 "min_price": min(prices) if prices else None,
                 "max_price": max(prices) if prices else None,
             }

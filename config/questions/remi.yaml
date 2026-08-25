@@ -1,6 +1,16 @@
-# remi is the store where the specification block lives only in the theme. Several of
-# these questions are answerable ONLY from template constants, which is exactly what
-# they are here to test.
+# remi: the store where the specification block lives only in the theme.
+#
+# kinds:
+#   attribute -- answerable only from a structured metafield or a template constant
+#   negation  -- must be enforced in SQL, never by cosine similarity
+#   semantic  -- ordinary intent matching
+#   lexical   -- exact term, tests the tsvector leg
+#
+# expect_handles may list several: near-duplicate handles exist in this catalogue
+# (custom-night-guard / custom-mouth-night-guards) and either is a correct answer.
+#
+# forbid_handles marks results that are wrong to return, not merely unhelpful. It is
+# what turns recall into a safety measurement -- see evaluate.py.
 
 questions:
   - q: cordless water flosser
@@ -8,37 +18,139 @@ questions:
     expect_handles: [water-flosser]
 
   - q: how long does the battery last
-    kind: attribute      # theme-resident: "Battery life: 30 days per charge"
+    kind: attribute
     expect_handles: [water-flosser]
 
   - q: what material is it made of
-    kind: attribute      # theme-resident: "Material: BPA-free, food-safe plastic"
-    expect_handles: [water-flosser]
-
-  - q: what is included in the box
-    kind: attribute      # theme-resident: nozzles, USB cable, guarantee
-    expect_handles: [water-flosser]
+    kind: attribute
+    expect_handles: [water-flosser, custom-night-guard, custom-mouth-night-guards]
 
   - q: how do I charge it
-    kind: attribute      # theme-resident: "Power: USB rechargeable"
+    kind: attribute
     expect_handles: [water-flosser]
+
+  - q: is it BPA free
+    kind: attribute
+    expect_handles: [water-flosser, custom-night-guard, custom-mouth-night-guards]
+
+  - q: how big is the water tank
+    kind: attribute
+    expect_handles: [water-flosser]
+
+  - q: how many nozzles come with it
+    kind: attribute
+    expect_handles: [water-flosser, replacement-nozzles-for-cordless-water-flosser]
+
+  - q: replacement tips for my flosser
+    kind: semantic
+    expect_handles: [replacement-nozzles-for-cordless-water-flosser]
 
   - q: something for cleaning my night guard or retainer
     kind: semantic
+    expect_handles: [ultrasonic-cleaner-pro, deep-clean-freshening-tablets, whitening-foam]
+
+  - q: ultrasonic cleaner
+    kind: lexical
+    expect_handles: [ultrasonic-cleaner-pro]
+
+  - q: what is the cleaner tank made of
+    kind: attribute
     expect_handles: [ultrasonic-cleaner-pro]
 
   - q: sanitise my toothbrush
     kind: semantic
     expect_handles: [uv-toothbrush-sanitizer]
 
-  - q: good for braces
-    kind: semantic
-    expect_handles: [water-flosser]
-
-  - q: is it portable for travel
+  - q: will it fit an electric toothbrush head
     kind: attribute
-    expect_handles: [water-flosser]
+    expect_handles: [uv-toothbrush-sanitizer]
 
-  - q: gentle on sensitive gums
+  - q: I grind my teeth at night
     kind: semantic
-    expect_handles: [water-flosser]
+    expect_handles: [custom-night-guard, custom-mouth-night-guards, starter-bundle]
+
+  - q: custom night guard made from my own impressions
+    kind: semantic
+    expect_handles: [custom-night-guard, custom-mouth-night-guards]
+
+  - q: I just finished braces and want to keep my teeth straight
+    kind: semantic
+    expect_handles: [custom-clear-retainers]
+
+  - q: clear retainers
+    kind: lexical
+    expect_handles: [custom-clear-retainers]
+
+  - q: whiten my teeth at home
+    kind: semantic
+    expect_handles: [custom-teeth-whitening-kit, whitening-gel]
+
+  - q: teeth whitening gel
+    kind: lexical
+    expect_handles: [whitening-gel]
+
+  - q: what is in the whitening gel
+    kind: attribute
+    expect_handles: [whitening-gel, custom-teeth-whitening-kit]
+
+  - q: foam that cleans and whitens at the same time
+    kind: semantic
+    expect_handles: [whitening-foam]
+
+  - q: cleaning tablets I can soak my guard in
+    kind: semantic
+    expect_handles: [deep-clean-freshening-tablets]
+
+  - q: how many tablets are in a pack
+    kind: attribute
+    expect_handles: [deep-clean-freshening-tablets]
+
+  - q: how often should I use it
+    kind: attribute
+    expect_handles: [whitening-foam, deep-clean-freshening-tablets, custom-teeth-whitening-kit]
+
+  - q: tool to get my night guard out
+    kind: semantic
+    expect_handles: [mouth-night-guard-removal-tool]
+
+  - q: what is the removal tool made from
+    kind: attribute
+    expect_handles: [mouth-night-guard-removal-tool]
+
+  - q: I need my guard fast
+    kind: semantic
+    expect_handles: [rush-service, emergency-3d-night-guard, priority-lab-impression-services-copy]
+
+  - q: I lost my impression kit
+    kind: semantic
+    expect_handles: [replacement-impression-kit]
+
+  - q: everything I need to get started
+    kind: semantic
+    expect_handles: [starter-bundle, night-guard-essentials-bundle, night-guard-super-bundle]
+
+  - q: the full cleaning bundle
+    kind: semantic
+    expect_handles: [the-complete-clean-bundle, deep-clean-system]
+
+  - q: gift card
+    kind: lexical
+    expect_handles: [gift-card]
+
+  - q: can I get my order gift wrapped
+    kind: semantic
+    expect_handles: [get-your-order-gift-wrapped]
+
+  # remi has zero free-from declarations, so every negation query must return nothing.
+  # These assert that the whitelist join fails closed rather than falling back to prose.
+  - q: night guard cleaner without peroxide
+    kind: negation
+    exclude_terms: [peroxide]
+    expect_handles: []
+    expect_empty: true
+
+  - q: whitening product with no hydrogen peroxide
+    kind: negation
+    exclude_terms: [hydrogen peroxide]
+    expect_handles: []
+    expect_empty: true

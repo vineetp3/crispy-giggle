@@ -118,10 +118,33 @@ def test_visible_text_matches_block_join(pages):
 
 
 def test_label_recovery():
+    """A trailing colon is markup evidence; the caller trusts it outright."""
     blocks = ["Material:", "BPA-free, food-safe plastic", "Battery life:", "30 days"]
-    assert label_for(blocks, 1) == "Material"
-    assert label_for(blocks, 3) == "Battery life"
+    assert label_for(blocks, 1) == ("Material", True)
+    assert label_for(blocks, 3) == ("Battery life", True)
     assert label_for(blocks, 0) is None
+
+
+def test_label_recovery_rejects_storefront_ui():
+    """These all labelled real fields on skout before the blocklist existed."""
+    for junk in (
+        "Sold out",
+        "Read Full Article",
+        "Learn More",
+        "$23.97",
+        "4.6",
+        "$1.80 per bar",
+        "/6 Pack",
+        "BONUS",
+        "Save 35% more",
+        "Select a flavor",
+    ):
+        assert label_for([junk, "some value"], 1) is None, junk
+
+
+def test_label_recovery_keeps_real_headings():
+    for good in ("Our Ingredients", "The Good News", "Material", "Tank capacity"):
+        assert label_for([good, "some value"], 1) == (good, False), good
 
 
 def test_label_recovery_rejects_prose():

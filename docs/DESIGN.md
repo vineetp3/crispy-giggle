@@ -163,8 +163,21 @@ null value are recorded and excluded from crawling. No URL is constructed by str
 
 Output: `api.jsonl`, one JSON object per product.
 
-Fetched price and inventory fields are **not** requested and **not** stored. They are read live
-at query time.
+Fetched price and inventory fields are **not** requested in the catalogue query and are
+**never** stored. This applies to prices held in **metafields** too: remi keeps six copies
+of one price across `custom.current_price`, `banner_pricing`, `smarterr_app_price`,
+`smarterr_single_price`, `smartrr_otp_price` and `current_subscription_price`, plus a
+`yellow_badge_save_amount` that equals full price. Those are rejected during `profile` with
+reason `commerce_fact`.
+
+One derived read is permitted: a **sellability verdict** per published product, from
+`availableForSale` and `price`. The verdict is stored; neither input is. It exists because
+`status:active` with a non-null `onlineStoreUrl` does not mean buyable — 31 of skout's 184
+published products are abandoned records priced 0.00 with `inventoryQuantity` at -770, -101
+or -14, several shadowing a live twin under a legacy handle. They are excluded from
+crawling, indexing and retrieval with reason `abandoned_sku`. Negative inventory alone is
+**not** the signal: remi has 23 of 30 products at negative quantity and all 30 are buyable,
+because that store runs continue-selling.
 
 ### 5.2 `fetch-html`
 
@@ -263,7 +276,7 @@ Emits **field assertions**, not a merged blob. One row per `(product, field, sou
 
 | Case | Rule |
 |---|---|
-| Price, inventory, variant availability | Never stored. Live API at query time |
+| Price, inventory, variant availability | Never stored, from any source including metafields. Live Storefront read at query time |
 | Structured attribute in a metafield | Metafield wins. A typed list beats extracted prose |
 | Present in both metafield and page | Metafield wins on value. The page contributes confirmation and the label |
 | Page only, identical across a template | Template constant. Store once against the template, attach to all its products |
@@ -302,8 +315,13 @@ Builds one **purpose-written retrieval document** per product from the canonical
 subtitle, product type, vendor, admitted attributes with their recovered labels, allergen
 exclusions, use cases, FAQ text. The merged blob is not embedded.
 
-Everything filterable stays a column — price band, dietary flags, stock, collection IDs.
+Everything filterable stays a column — dietary flags, collection IDs, product type.
 Filtering in SQL is exact; filtering by embedding similarity is not.
+
+**Price and stock are deliberately NOT columns**, so they are not SQL-filterable. Earlier
+revisions listed `price band` and `in_stock` here while §5.4 and §6 forbade storing them;
+that was unimplementable and is resolved in favour of §5.4. Commerce constraints are
+applied after the live read — see §5.6.
 
 Where FAQ content is long, emit one chunk per FAQ entry with a foreign key to the product, so
 retrieval can return a specific answer rather than a whole product.
@@ -327,10 +345,23 @@ Four stages.
    generated `tsvector` top-50. Fuse with reciprocal rank fusion, scoring each document
    `Σ 1/(60 + rank)` across both lists. This catches exact terms — a brand, a SKU — that
    embeddings miss.
-3. Apply constraints as SQL `WHERE` clauses: price band, `in_stock`, and allergen exclusions from
-   `filter.contains` as `NOT` predicates. **Negation is handled here, not in vector space.**
-4. Rerank the survivors with Cohere Rerank 4.0 down to 5, then make **one live Admin API call** on
-   those variant IDs for price, inventory and availability.
+3. Apply non-commerce constraints as SQL `WHERE` clauses. **Allergen negation is a whitelist
+   join, not an exclusion scan**: `filter.contains` is a *free-from* declaration, so an
+   excluded term must be **present** in it, and a product with no declaration is not an
+   answer. Negation is handled here, never in vector space.
+4. **Live commerce read**, on the Storefront API rather than Admin — `@inContext` gives
+   market-correct pricing, and the separate rate-limit bucket keeps shopper queries from
+   competing with ingestion. Admin is the fallback when no storefront token is configured.
+5. Apply commerce constraints (price ceiling, in stock) to the live values. This must
+   happen before the rerank, so the cross-encoder is not spent on results about to be
+   dropped. A hit whose live read returned nothing fails the filter.
+6. Rerank the survivors with Cohere Rerank 4.0 down to 5.
+
+The first stage retrieves 200 per leg rather than 50, because a post-retrieval commerce
+filter can empty a shallow pool; the live read is bounded to the top 60 of the fused
+ranking so one query is not a dozen API round trips. This ordering holds because the corpus
+is a few hundred products per store. Past roughly tens of thousands, a cached price band
+with an explicit TTL and staleness contract becomes unavoidable.
 
 Output per hit: product title, matched fields with their provenance and trust class, and the live
 price.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator
 
 import psycopg
@@ -136,8 +135,52 @@ def upsert_assertion(conn: psycopg.Connection, product_id: int, a: dict[str, Any
     )
 
 
+def delete_products(
+    conn: psycopg.Connection, store_id: int, shopify_product_ids: list[str]
+) -> int:
+    if not shopify_product_ids:
+        return 0
+    row = conn.execute(
+        """
+        WITH gone AS (
+            DELETE FROM products
+            WHERE store_id = %s AND shopify_product_id = ANY(%s)
+            RETURNING 1
+        )
+        SELECT count(*) AS n FROM gone
+        """,
+        (store_id, shopify_product_ids),
+    ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def replace_assertions(
+    conn: psycopg.Connection, product_id: int, rows: list[dict[str, Any]]
+) -> None:
+    for row in rows:
+        upsert_assertion(conn, product_id, row)
+    if not rows:
+        conn.execute("DELETE FROM field_assertions WHERE product_id = %s", (product_id,))
+        return
+    conn.execute(
+        """
+        DELETE FROM field_assertions fa
+        WHERE fa.product_id = %(pid)s
+          AND NOT EXISTS (
+              SELECT 1
+              FROM unnest(%(fields)s::text[], %(sources)s::text[]) AS k(field, source)
+              WHERE k.field = fa.field AND k.source = fa.source
+          )
+        """,
+        {
+            "pid": product_id,
+            "fields": [r["field"] for r in rows],
+            "sources": [r["source"] for r in rows],
+        },
+    )
+
+
 def replace_edges(conn: psycopg.Connection, store_id: int, from_id: str, rows: list[dict[str, Any]]) -> None:
-    """Set-diff, not append. Append-only edge tables accumulate stale relationships."""
     conn.execute(
         "DELETE FROM edges WHERE store_id = %s AND from_type = 'product' AND from_id = %s",
         (store_id, from_id),
@@ -194,20 +237,23 @@ def upsert_document(
     conn: psycopg.Connection,
     product_id: int,
     chunk_key: str,
+    trust_class: str,
     text: str,
     text_hash: str,
     embedding: list[float] | None,
 ) -> None:
     conn.execute(
         """
-        INSERT INTO documents (product_id, chunk_key, text, text_hash, embedding)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO documents (
+            product_id, chunk_key, trust_class, text, text_hash, embedding
+        ) VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (product_id, chunk_key) DO UPDATE SET
+            trust_class = EXCLUDED.trust_class,
             text = EXCLUDED.text,
             text_hash = EXCLUDED.text_hash,
             embedding = EXCLUDED.embedding
         """,
-        (product_id, chunk_key, text, text_hash, embedding),
+        (product_id, chunk_key, trust_class, text, text_hash, embedding),
     )
 
 

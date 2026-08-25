@@ -1,58 +1,164 @@
-# Hand-written shopper questions. `expect_handles` are the products that SHOULD appear
-# in the top-k. Fill these in against the real catalogue after the first fetch-api run;
-# the handles below are the ones observed on 2026-08-24.
+# skout: content lives in metafields, not the theme. 152 of 184 published products
+# carry a free-from declaration, so negation is answerable but not for everything.
 #
 # kinds:
-#   attribute -- answerable only from a structured metafield or theme content
-#   negation  -- must be enforced by SQL, not cosine similarity
+#   attribute -- answerable only from a structured metafield or a template constant
+#   negation  -- must be enforced in SQL, never by cosine similarity
 #   semantic  -- ordinary intent matching
 #   lexical   -- exact term, tests the tsvector leg
+#
+# expect_handles may list several: this catalogue has near-duplicate handles for the
+# same flavour (single / bundle / build-your-own variants) and any is a correct answer.
+#
+# forbid_handles marks results that are WRONG to return, not merely unhelpful. Recall
+# alone scores a peanut-containing cookie in a peanut-free query as a pass; this is what
+# makes the negation cases a safety measurement. See evaluate.py.
 
 questions:
   - q: peanut butter cookies
     kind: lexical
-    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+    expect_handles: [peanut-butter-soft-baked-cookies, skout-organic-peanut-butter-soft-baked-cookies, peanut-butter-cookie-2-pack-bundle]
 
-  - q: soft baked cookies with chocolate
+  - q: lemon poppyseed
+    kind: lexical
+    expect_handles: [lemon-poppyseed-soft-baked-cookies, skout-organic-lemon-poppyseed-soft-baked-cookies, lemon-poppyseed-cookie-2-pack-bundle]
+
+  - q: double chocolate cookies
+    kind: lexical
+    expect_handles: [double-chocolate-soft-baked-cookies, double-chocolate-cookie-2-pack-bundle]
+
+  - q: oatmeal raisin
+    kind: lexical
+    expect_handles: [oatmeal-raisin-soft-baked-cookies, oatmeal-raisin-cookie-2-pack-bundle]
+
+  - q: apple pie bar
+    kind: lexical
+    expect_handles: [apple-pie-organic-kids-snack-bars, skout-organic-apple-pie-kids-bar, apple-pie-kids-bar-bundle]
+
+  - q: carrot cake
+    kind: lexical
+    expect_handles: [carrot-cake-kids-bar, carrot-cake-kids-bar-bundle]
+
+  - q: mango mayhem
+    kind: lexical
+    expect_handles: [mango-mayhem-kids-bar, mango-mayhem-kids-bar-bundle]
+
+  - q: french toast
+    kind: lexical
+    expect_handles: [french-toast-kids-bar, french-toast-kids-bar-bundle]
+
+  - q: blackberry lemonade
+    kind: lexical
+    expect_handles: [blackberry-lemonade-kids-bar, blackberry-lemonade-kids-bar-bundle]
+
+  - q: pecan pie
+    kind: lexical
+    expect_handles: [pecan-pie-kids-bar, pecan-pie-kids-bar-bundle]
+
+  - q: soft baked cookies with chocolate chips
     kind: semantic
-    expect_handles:
-      - skout-organic-double-chocolate-soft-baked-cookies
-      - skout-organic-oatmeal-chocolate-chip-soft-baked-cookies
+    expect_handles: [oatmeal-chocolate-chip-soft-baked-cookies, double-chocolate-soft-baked-cookies, peanut-butter-chocolate-chip-soft-baked-cookies-bund]
+
+  - q: something for school lunches for kids
+    kind: semantic
+    expect_handles: [kids-bar-sample-pack, kids-fruit-variety-pack, apple-pie-organic-kids-snack-bars, blueberry-blast-organic-kids-snack-bars]
+
+  - q: a fruity snack bar for a toddler
+    kind: semantic
+    expect_handles: [kids-fruit-variety-pack, blueberry-blast-kids-bar, mango-mayhem-kids-bar, raspberry-rush-kids-bar, blackberry-lemonade-kids-bar]
+
+  - q: high protein bar for after the gym
+    kind: semantic
+    expect_handles: [peanut-butter-organic-protein-bar, chocolate-peanut-butter-protein-bar, peanut-butter-jelly-protein-bar, protein-bar-build-a-box]
+
+  - q: variety pack to try several flavours
+    kind: semantic
+    expect_handles: [kids-bar-sample-pack, kids-fruit-variety-pack, build-a-bundle, kids-bar-build-a-box, protein-bar-build-a-box]
+
+  - q: let me pick my own flavours
+    kind: semantic
+    expect_handles: [kids-bar-build-a-box, protein-bar-build-a-box, build-a-bundle]
+
+  - q: a dessert-inspired treat
+    kind: semantic
+    expect_handles: [cookie-dough-kids-bar, chocolate-brownie-kids-bar, carrot-cake-kids-bar, pecan-pie-kids-bar]
+
+  - q: gift for someone
+    kind: semantic
+    expect_handles: [cookie-protein-monthly-gift, kids-bar-build-a-box-copy, protein-bar-build-a-box-copy, gifted-product]
 
   - q: what are the nutrition facts, calories and sugar
     kind: attribute
-    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+    expect_handles: [peanut-butter-soft-baked-cookies, skout-organic-peanut-butter-soft-baked-cookies, apple-pie-organic-kids-snack-bars]
 
+  - q: how much protein is in a bar
+    kind: attribute
+    expect_handles: [peanut-butter-organic-protein-bar, chocolate-peanut-butter-protein-bar, peanut-butter-jelly-protein-bar]
+
+  - q: how many calories
+    kind: attribute
+    expect_handles: [apple-pie-organic-kids-snack-bars, peanut-butter-soft-baked-cookies, blueberry-blast-organic-kids-snack-bars]
+
+  - q: what ingredients are in it
+    kind: attribute
+    expect_handles: [peanut-butter-soft-baked-cookies, apple-pie-organic-kids-snack-bars, skout-organic-peanut-butter-soft-baked-cookies]
+
+  - q: is it made with organic dates
+    kind: attribute
+    expect_handles: [apple-pie-organic-kids-snack-bars, peanut-butter-organic-protein-bar, blueberry-blast-organic-kids-snack-bars]
+
+  - q: does it contain sunflower butter
+    kind: attribute
+    expect_handles: [apple-pie-organic-kids-snack-bars, mango-mayhem-kids-bar, blueberry-blast-organic-kids-snack-bars]
+
+  - q: what is the shelf life and how should I store them
+    kind: attribute
+    expect_handles: [peanut-butter-soft-baked-cookies, apple-pie-organic-kids-snack-bars]
+
+  - q: how many bars come in a pack
+    kind: attribute
+    expect_handles: [kids-bar-sample-pack, kids-fruit-variety-pack, kids-bar-build-a-box]
+
+  # Negation. forbid_handles are products whose own ingredient list contains the term,
+  # so returning one is a safety failure rather than a ranking miss.
   - q: cookies without peanuts
     kind: negation
     exclude_terms: [peanut]
-    expect_handles:
-      - skout-organic-lemon-poppyseed-soft-baked-cookies
-      - skout-organic-oatmeal-raisin-soft-baked-cookies
+    expect_handles: [lemon-poppyseed-soft-baked-cookies, oatmeal-raisin-soft-baked-cookies, double-chocolate-soft-baked-cookies]
+    forbid_handles: [peanut-butter-soft-baked-cookies, skout-organic-peanut-butter-soft-baked-cookies, peanut-butter-chocolate-chip-soft-baked-cookies-bund]
 
   - q: tree nut free snacks
     kind: negation
     exclude_terms: [almond, cashew, hazelnut, pecan, walnut]
-    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+    expect_handles: [apple-pie-organic-kids-snack-bars, blueberry-blast-kids-bar, blackberry-lemonade-kids-bar]
+    forbid_handles: [almond-cookie-kids-bar, skout-organic-almond-cookie-kids-bar, pecan-pie-kids-bar]
 
-  - q: gluten free and vegan certified
-    kind: attribute
-    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+  - q: kids bar with no peanuts
+    kind: negation
+    exclude_terms: [peanut]
+    expect_handles: [apple-pie-organic-kids-snack-bars, blueberry-blast-kids-bar, carrot-cake-kids-bar, mango-mayhem-kids-bar]
+    forbid_handles: [peanut-butter-and-jelly-kids-bar, peanut-butter-and-jelly-kids-snack-bars, chocolate-peanut-butter-kids-bar]
 
-  - q: something for school lunches for kids
-    kind: semantic
-    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+  - q: protein bar without peanuts
+    kind: negation
+    exclude_terms: [peanut]
+    expect_handles: []
+    forbid_handles: [peanut-butter-organic-protein-bar, chocolate-peanut-butter-protein-bar, peanut-butter-jelly-protein-bar]
 
-  - q: what is the shelf life and how should I store them
-    kind: attribute
-    expect_handles: [skout-organic-peanut-butter-soft-baked-cookies]
+  - q: snacks with no almonds
+    kind: negation
+    exclude_terms: [almond]
+    expect_handles: [apple-pie-organic-kids-snack-bars, blueberry-blast-kids-bar, carrot-cake-kids-bar]
+    forbid_handles: [almond-cookie-kids-bar, skout-organic-almond-cookie-kids-bar]
 
-  - q: variety pack to try several flavours
-    kind: semantic
-    expect_handles:
-      - skout-organic-soft-baked-cookie-variety-pack
-      - skout-organic-soft-baked-cookie-sample-pack
+  - q: coconut free bars
+    kind: negation
+    exclude_terms: [coconut]
+    expect_handles: [apple-pie-organic-kids-snack-bars, blueberry-blast-organic-kids-snack-bars]
+    forbid_handles: [peanut-butter-soft-baked-cookies, lemon-poppyseed-soft-baked-cookies]
 
-  - q: lemon poppyseed
-    kind: lexical
-    expect_handles: [skout-organic-lemon-poppyseed-soft-baked-cookies]
+  - q: cashew free snack
+    kind: negation
+    exclude_terms: [cashew]
+    expect_handles: [apple-pie-organic-kids-snack-bars, blueberry-blast-kids-bar, mango-mayhem-kids-bar]
+    forbid_handles: []

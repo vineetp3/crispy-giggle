@@ -10,12 +10,15 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import db, evaluate, index as index_stage, merge as merge_stage, profile as profile_stage
+from . import db, evaluate
+from . import index as index_stage
+from . import merge as merge_stage
+from . import profile as profile_stage
 from . import report as report_stage
 from .artifacts import record_stage, write_jsonl
 from .config import ConfigError, StoreConfig, load_env, load_stores, token_for
 from .crawl import fetch_pages, select_pages
-from .shopify_api import AdminClient, PRODUCTS_QUERY, ShopifyError
+from .shopify_api import PRODUCTS_QUERY, AdminClient, ShopifyError
 
 app = typer.Typer(add_completion=False, help="Shopify catalogue ingestion feasibility POC")
 console = Console()
@@ -34,11 +37,8 @@ def _stores(only: Optional[str]) -> list[StoreConfig]:
     return stores
 
 
-# --------------------------------------------------------------------------- #
-
 @app.command("init-db")
 def init_db() -> None:
-    """Apply sql/schema.sql. Idempotent."""
     load_env()
     db.init_db()
     console.print("[green]schema applied[/green]")
@@ -46,13 +46,11 @@ def init_db() -> None:
 
 @app.command("show-query")
 def show_query() -> None:
-    """Print the products GraphQL query, so it can be pasted into GraphiQL first."""
     console.print(PRODUCTS_QUERY)
 
 
 @app.command("stores")
 def list_stores(store: Optional[str] = typer.Option(None, "--store")) -> None:
-    """List resolved store config."""
     table = Table(title="stores")
     for column in ("slug", "domain", "scope", "profile_pages", "fetch", "threshold"):
         table.add_column(column)
@@ -69,7 +67,6 @@ def fetch_api(
     store: Optional[str] = typer.Option(None, "--store"),
     limit: Optional[int] = typer.Option(None, "--limit", help="stop after N products"),
 ) -> None:
-    """Products, metafields, variants and definitions -> data/<slug>/api.jsonl"""
     for cfg in _stores(store):
         try:
             token = token_for(cfg.slug)
@@ -86,14 +83,24 @@ def fetch_api(
                     products.append(product)
                     if limit and len(products) >= limit:
                         break
+                sellable = client.sellability(
+                    [p for p in products if p.get("online_store_url")]
+                )
         except ShopifyError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1)
+
+        for product in products:
+            product["sellable"] = sellable.get(str(product["product_id"]), False)
 
         write_jsonl(cfg.api_path, products)
         write_jsonl(cfg.data_dir / "metafield_definitions.jsonl", definitions)
 
         published = sum(1 for p in products if p.get("online_store_url"))
+        abandoned = [
+            p["handle"] for p in products
+            if p.get("online_store_url") and not p.get("sellable")
+        ]
         metafields = sum(len(p.get("metafields") or []) for p in products)
         has_template = sum(1 for p in products if p.get("template_suffix"))
 
@@ -103,11 +110,19 @@ def fetch_api(
             "metafields": metafields,
             "definitions": len(definitions),
             "template_suffix_present": has_template,
+            "abandoned_sku": len(abandoned),
+            "abandoned_sku_sample": sorted(abandoned)[:20],
         })
         console.print(
             f"  {len(products)} products ({published} published), {metafields} metafields, "
             f"{len(definitions)} definitions -> {cfg.api_path}"
         )
+        if abandoned:
+            console.print(
+                f"  [yellow]{len(abandoned)} of {published} published products are "
+                f"abandoned SKUs (no priced or available variant); excluded from crawling "
+                f"and indexing[/yellow]"
+            )
         if has_template == 0:
             console.print(
                 "  [yellow]no templateSuffix values seen; template grouping will fall "
@@ -120,7 +135,6 @@ def fetch_html(
     store: Optional[str] = typer.Option(None, "--store"),
     limit: Optional[int] = typer.Option(None, "--limit"),
 ) -> None:
-    """Fetch selected product pages, escalating the fetch profile when blocked."""
     from .artifacts import load_products
 
     for cfg in _stores(store):
@@ -144,7 +158,6 @@ def fetch_html(
 
 @app.command("profile")
 def profile_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
-    """Differencing, allowlist, template constants, coverage -> profile.json"""
     for cfg in _stores(store):
         payload = profile_stage.build_profile(cfg)
         coverage = (payload.get("coverage") or {}).get("coverage_pct")
@@ -157,7 +170,6 @@ def profile_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
 
 @app.command("merge")
 def merge_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
-    """Field assertions and edges -> Postgres."""
     for cfg in _stores(store):
         counts = merge_stage.run(cfg)
         console.print(
@@ -165,6 +177,11 @@ def merge_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
             f"{counts['assertions']} assertions "
             f"({counts['quotable']} quotable / {counts['retrieval']} retrieval), "
             f"{counts['edges']} edges"
+            + (
+                f", {counts['abandoned_skipped']} abandoned SKUs skipped"
+                if counts.get("abandoned_skipped")
+                else ""
+            )
         )
 
 
@@ -173,7 +190,6 @@ def index_cmd(
     store: Optional[str] = typer.Option(None, "--store"),
     force: bool = typer.Option(False, "--force", help="re-embed unchanged documents"),
 ) -> None:
-    """Retrieval documents and embeddings -> Postgres."""
     for cfg in _stores(store):
         counts = index_stage.run(cfg, force=force)
         console.print(
@@ -191,8 +207,11 @@ def search_cmd(
     exclude: Optional[str] = typer.Option(None, "--exclude", help="comma-separated terms"),
     no_rerank: bool = typer.Option(False, "--no-rerank"),
     no_live: bool = typer.Option(False, "--no-live", help="skip the live price call"),
+    max_price: Optional[float] = typer.Option(
+        None, "--max-price", help="applied to live price, not a stored column"
+    ),
+    in_stock: bool = typer.Option(False, "--in-stock", help="live availability only"),
 ) -> None:
-    """Hybrid search with provenance."""
     from .search import search
 
     stores = _stores(store)
@@ -203,6 +222,7 @@ def search_cmd(
     hits = search(
         query, cfg, slug=slug, top_k=top_k, exclude_terms=terms,
         rerank=not no_rerank, live_prices=not no_live,
+        max_price=max_price, in_stock_only=in_stock,
     )
     if not hits:
         console.print("[yellow]no results[/yellow]")
@@ -214,7 +234,8 @@ def search_cmd(
         scores = f"rrf={hit.rrf:.4f} vec={hit.vector_rank} lex={hit.lexical_rank}"
         if hit.rerank_score is not None:
             scores += f" rerank={hit.rerank_score:.3f}"
-        console.print(f"   [dim]{scores}  chunk={hit.chunk_key}[/dim]")
+        ground = "groundable" if hit.groundable else "match-only"
+        console.print(f"   [dim]{scores}  chunk={hit.chunk_key} ({ground})[/dim]")
         if hit.live:
             console.print(
                 f"   [green]live[/green]: {hit.live['available']}/{hit.live['variants']} "
@@ -231,7 +252,6 @@ def search_cmd(
 
 @app.command("report")
 def report_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
-    """Print the per-store profile report. This is the POC's deliverable."""
     for cfg in _stores(store):
         report_stage.render(cfg)
 
@@ -241,29 +261,36 @@ def eval_cmd(
     store: Optional[str] = typer.Option(None, "--store"),
     top_k: int = typer.Option(5, "--top-k"),
     no_rerank: bool = typer.Option(False, "--no-rerank"),
+    compare_rerank: bool = typer.Option(
+        False, "--compare-rerank", help="run with and without the cross-encoder"
+    ),
 ) -> None:
-    """Recall@k against config/questions/<slug>.yaml"""
     results = {}
     for cfg in _stores(store):
-        results[cfg.slug] = evaluate.run(cfg, top_k=top_k, rerank=not no_rerank)
-    console.print(json.dumps({k: v["recall"] for k, v in results.items()}, indent=2))
+        if compare_rerank:
+            results[cfg.slug] = evaluate.compare(cfg, top_k=top_k)["with_rerank"]
+        else:
+            results[cfg.slug] = evaluate.run(cfg, top_k=top_k, rerank=not no_rerank)
+    console.print(
+        json.dumps(
+            {
+                k: {"recall": v["recall"], "violations": v["violations"]}
+                for k, v in results.items()
+            },
+            indent=2,
+        )
+    )
 
 
 @app.command("seed-fixtures")
 def seed_fixtures() -> None:
-    """Seed data/skout from tests/fixtures so profile+report run with no token.
-
-    The metafield values are real (observed 2026-08-21) but only five products are
-    present and review content is absent, so the coverage number from this seed is not
-    meaningful. It exercises the pipeline, nothing more.
-    """
     import shutil
     import sys
 
     from .config import REPO_ROOT
 
     sys.path.insert(0, str(REPO_ROOT / "tests"))
-    from test_profile import DESCRIPTION, FIXTURES, HANDLES, IDS, _metafields  # type: ignore
+    from test_profile import DESCRIPTION, FIXTURES, HANDLES, IDS, _metafields
 
     load_env()
     cfg = load_stores(only="skout")[0]
@@ -312,7 +339,6 @@ def run_all(
     store: Optional[str] = typer.Option(None, "--store"),
     limit: Optional[int] = typer.Option(None, "--limit"),
 ) -> None:
-    """fetch-api -> fetch-html -> profile -> merge -> index -> report."""
     init_db()
     fetch_api(store=store, limit=limit)
     fetch_html(store=store, limit=None)

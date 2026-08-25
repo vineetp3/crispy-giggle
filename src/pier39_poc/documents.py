@@ -1,88 +1,92 @@
-"""Build the retrieval document for a product.
+"""Build retrieval documents for a product.
 
-Deliberately written, not a dump of the merged record. Two rules:
+Gotchas:
 
-* Anything we want to FILTER on stays a column, never prose. Filtering in SQL is exact;
-  filtering by embedding similarity is not.
-* Both trust classes go into the document, because unrendered enrichment is the most
-  retrieval-useful content on some products. The trust class governs what may be
-  *quoted*, not what may be *matched*.
+One document per trust class, not one per product. Both classes must be retrievable --
+unrendered enrichment is the most retrieval-useful content on some products -- but the
+document text is what an answer layer receives as grounding context, and a single mixed
+string carries no marker separating a vetted nutrition panel from generated prose. The
+trust class has to live on the chunk, because a class stored only on a sibling assertion
+row is not visible to whoever reads `documents.text`.
+
+`free_from` never enters a document. Its polarity is invisible to an embedding: writing
+`Almonds; Cashews; Hazelnuts` for a product that contains none of them teaches the vector
+the opposite of the fact. Polarity-bearing fields are filters, not prose, and negation is
+answered in SQL.
+
+Anything filterable stays a column. Filtering in SQL is exact; filtering by embedding
+similarity is not.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from .matching import FREE_FROM_FIELD
+
 MAX_FIELD_CHARS = 1200
-SKIP_FIELDS = {"title", "vendor", "product_type"}
+SKIP_FIELDS = {"title", "vendor", "product_type", "description"}
+EXCLUDED_FROM_TEXT = {FREE_FROM_FIELD}
 
 
-def build_document(product: dict[str, Any], assertions: list[dict[str, Any]]) -> str:
-    """Compose one retrieval document. Labels are used when we recovered them."""
+def _header(product: dict[str, Any]) -> list[str]:
     lines: list[str] = []
-
     title = product.get("title") or product.get("handle") or ""
     if title:
         lines.append(title)
-
-    descriptors = [
-        product.get("product_type"),
-        product.get("vendor"),
-    ]
-    descriptor_line = " | ".join(d for d in descriptors if d)
-    if descriptor_line:
-        lines.append(descriptor_line)
-
+    descriptor = " | ".join(
+        d for d in (product.get("product_type"), product.get("vendor")) if d
+    )
+    if descriptor:
+        lines.append(descriptor)
     tags = product.get("tags") or []
     if tags:
         lines.append("Tags: " + ", ".join(tags[:25]))
+    return lines
 
-    description = next(
-        (a["value"] for a in assertions if a["field"] == "description"), None
-    )
+
+def build_document(
+    product: dict[str, Any], assertions: list[dict[str, Any]], trust_class: str
+) -> str:
+    scoped = [a for a in assertions if a.get("trust_class") == trust_class]
+    body: list[str] = []
+
+    description = next((a["value"] for a in scoped if a["field"] == "description"), None)
     if description:
-        lines.append(description[:MAX_FIELD_CHARS])
+        body.append(description[:MAX_FIELD_CHARS])
 
-    for assertion in assertions:
+    for assertion in scoped:
         field = assertion["field"]
-        if field in SKIP_FIELDS or field == "description":
+        if field in SKIP_FIELDS or field in EXCLUDED_FROM_TEXT:
             continue
         value = (assertion.get("value") or "").strip()
         if not value:
             continue
         label = assertion.get("label") or _readable(field)
-        lines.append(f"{label}: {value[:MAX_FIELD_CHARS]}")
+        body.append(f"{label}: {value[:MAX_FIELD_CHARS]}")
 
-    return "\n".join(lines).strip()
+    if not body:
+        return ""
+    return "\n".join(_header(product) + body).strip()
 
 
 def _readable(field: str) -> str:
-    """`custom.product_blue_content` -> `Product Blue Content` as a last resort.
-
-    A recovered label from the page is always better; this is the fallback when the
-    theme gave us nothing to read.
-    """
     tail = field.split(".", 1)[-1]
     if tail.startswith("constant_"):
         return "Details"
     return tail.replace("_", " ").replace("-", " ").strip().title()
 
 
-def faq_chunks(assertions: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    """Split FAQ-shaped fields into their own chunks.
-
-    A long FAQ blob dilutes the product's main embedding and makes retrieval return the
-    whole product when the shopper asked one specific question.
-    """
-    out: list[tuple[str, str]] = []
+def faq_chunks(assertions: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
+    out: list[tuple[str, str, str]] = []
     for assertion in assertions:
-        field = assertion["field"]
-        if "faq" not in field.lower():
+        if "faq" not in assertion["field"].lower():
             continue
-        value = assertion.get("value") or ""
-        parts = [p.strip() for p in value.split("; ") if p.strip()]
+        parts = [p.strip() for p in (assertion.get("value") or "").split("; ") if p.strip()]
         if len(parts) < 2:
             continue
         for i, part in enumerate(parts):
-            out.append((f"faq_{i}", part[:MAX_FIELD_CHARS]))
+            out.append(
+                (f"faq_{i}", part[:MAX_FIELD_CHARS], assertion.get("trust_class", "retrieval"))
+            )
     return out

@@ -1,15 +1,36 @@
 """Merge API and page evidence into field assertions, then load Postgres.
 
-Assertions, not a merged blob. Every value carries where it came from, whether it is
-rendered on the live storefront, and which trust class it belongs to:
+Gotchas:
 
-  retrieval  -- feeds the embedding and matching. NEVER quoted to a shopper.
-  quotable   -- the bot may state it as fact.
+`filter.contains` is a FREE-FROM list, not a contains list. It is renamed to
+`free_from` here so no downstream reader can invert the allergen filter. Proved on
+skout: the peanut-butter bar omits `Peanut`; the lemon-poppyseed cookie includes it.
 
-Unrendered enrichment is retrieval-only. skout's `custom.product_faqs` are visibly
-LLM-generated and hedge with "check the ingredient statement on the package"; no
-merchant has vetted them on the storefront. This split is what stops the bot asserting
-an unvetted allergen claim.
+Quotability is decided by type and shape, NOT by render presence. Rendering only tells
+you the theme consumed the key -- the page is rendered from the metafield, so a match
+says nothing about whether a merchant vetted the value. skout's `custom.short_description`
+renders on every sampled product and is generated marketing prose; `custom.nutrients` is
+a typed list of checkable facts whose theme presence is incidental. So: prose types and
+untyped `string` are never quotable, `json` is never quotable (skout's `product_faqs` and
+`product_attributes` are json holding hedged generated sentences), and a candidate over
+QUOTABLE_MAX_TOKENS is prose regardless of its declared type.
+
+Freshness is recorded (`source_updated_at`) but deliberately does NOT gate quotability.
+Median metafield age on skout is over 1,000 days for `custom.nutrients`, `filter.contains`
+and `filter.curated`; an age cliff would empty the quotable set rather than make it safer.
+Decay needs a re-confirmation loop that v0 does not have.
+
+`rendered` is per product, never per key. A key at an 0.85 hit rate does not render on
+the other 15%, and a product whose page was never fetched has no render evidence at all.
+
+Conflicts are dropped, never reconciled. skout's peanut-butter cookie reports 72, 63 and
+4.8 across three review namespaces and remi reports 51, 627 and 1193 for one product, so
+neither gets a review count at all.
+
+A theme constant is quotable only when it carries a recovered label. A labelled pair is
+markup-evidenced (`Material: BPA-free, food-safe plastic`); an unlabelled one is whatever
+survived intersecting a template group's residual, and on skout's heterogeneous `_default`
+group that includes blog titles, "1 year ago" and per-variant pricing.
 """
 
 from __future__ import annotations
@@ -22,7 +43,14 @@ from . import db
 from .artifacts import load_products, read_json, record_stage, sha256
 from .blocks import visible_text
 from .config import StoreConfig
-from .matching import candidates, is_reference_type
+from .crawl import template_key
+from .matching import (
+    FREE_FROM_FIELD,
+    FREE_FROM_KEYS,
+    candidates,
+    is_reference_type,
+    tokens,
+)
 
 REFERENCE_RELATIONS = {
     "related_products": "related_product",
@@ -35,6 +63,29 @@ REFERENCE_RELATIONS = {
 }
 
 _GID_RE = re.compile(r"gid://shopify/(\w+)/(\d+)")
+
+PROSE_TYPES = frozenset({"multi_line_text_field", "rich_text_field", "html"})
+UNTYPED_TYPES = frozenset({"string", ""})
+NEVER_QUOTABLE_TYPES = frozenset({"json", "json_string"})
+QUOTABLE_MAX_TOKENS = 8
+
+_EMBEDDED_PRICE_RE = re.compile(r"[$£€]\s*\d")
+
+THEME_QUOTABLE_MAX_TOKENS = 15
+_NUMERIC_ONLY_RE = re.compile(r"^[\d\s./:+%-]+$")
+
+REVIEW_QUANTITIES = {
+    "rating": ("reviews.rating", "stamped.reviews_average", "loox.avg_rating"),
+    "rating_count": (
+        "reviews.rating_count",
+        "stamped.reviews_count",
+        "loox.num_reviews",
+    ),
+}
+
+NEVER_QUOTABLE_NAMESPACES = frozenset({"agentiq"})
+
+IDENTITY_FIELDS = ("title", "vendor", "product_type")
 
 
 @dataclass
@@ -62,35 +113,74 @@ class Assertion:
         }
 
 
-def _trust_class(reason: str, rendered: bool) -> str:
-    """Quotable only when the storefront shows it, or a typed metafield matched."""
-    if rendered and reason in ("rendered", "partially_rendered"):
-        return "quotable"
-    return "retrieval"
+def is_quotable_metafield(namespace: str, mf_type: str, values: list[str]) -> bool:
+    if namespace in NEVER_QUOTABLE_NAMESPACES:
+        return False
+    base = mf_type.removeprefix("list.")
+    if base in PROSE_TYPES or base in UNTYPED_TYPES or base in NEVER_QUOTABLE_TYPES:
+        return False
+    for value in values:
+        if "<" in value or value.rstrip().endswith(("?", ":")):
+            return False
+        if _EMBEDDED_PRICE_RE.search(value):
+            return False
+        if len(tokens(value)) > QUOTABLE_MAX_TOKENS:
+            return False
+    return bool(values)
+
+
+def is_quotable_theme_value(value: str) -> bool:
+    if "<" in value or value.rstrip().endswith(("?", ":")):
+        return False
+    if _EMBEDDED_PRICE_RE.search(value):
+        return False
+    if _NUMERIC_ONLY_RE.match(value):
+        return False
+    return 0 < len(tokens(value)) <= THEME_QUOTABLE_MAX_TOKENS
+
+
+def _conflicting_review_fields(product: dict[str, Any]) -> set[str]:
+    values: dict[str, set[str]] = {}
+    for mf in product.get("metafields") or []:
+        full = f"{mf.get('namespace')}.{mf.get('key')}"
+        for quantity, keys in REVIEW_QUANTITIES.items():
+            if full in keys:
+                for cand in candidates(mf.get("type") or "", mf.get("value") or ""):
+                    values.setdefault(quantity, set()).add(cand.strip())
+    dropped: set[str] = set()
+    for quantity, seen in values.items():
+        if len(seen) > 1:
+            dropped.update(REVIEW_QUANTITIES[quantity])
+    return dropped
 
 
 def build_assertions(
     product: dict[str, Any],
     allowlist: dict[tuple[str, str], dict[str, Any]],
-    template_constants: dict[str, list[str]],
+    template_constants: dict[str, list[dict[str, Any]]],
+    description_rendered: frozenset[str] = frozenset(),
+    crawled: frozenset[str] = frozenset(),
 ) -> list[Assertion]:
     out: list[Assertion] = []
+    handle = product.get("handle") or ""
+    conflicting = _conflicting_review_fields(product)
 
     description = visible_text(product.get("description_html") or "")
     if description:
+        shown = handle in description_rendered
         out.append(
             Assertion(
                 "description", None, description, "descriptionHtml", "description",
-                True, "quotable", product.get("updated_at"),
+                shown, "quotable" if shown else "retrieval", product.get("updated_at"),
             )
         )
 
-    for key in ("title", "vendor", "product_type"):
+    for key in IDENTITY_FIELDS:
         value = (product.get(key) or "").strip()
         if value:
             out.append(
-                Assertion(key, None, value, f"api:{key}", "api", True, "quotable",
-                          product.get("updated_at"))
+                Assertion(key, None, value, f"api:{key}", "api", handle in crawled,
+                          "quotable", product.get("updated_at"))
             )
 
     for mf in product.get("metafields") or []:
@@ -104,27 +194,41 @@ def build_assertions(
         values = candidates(mf_type, mf.get("value") or "")
         if not values:
             continue
-        rendered = bool(verdict.get("hit_rate")) and verdict.get("reason") in (
-            "rendered",
-            "partially_rendered",
+        if f"{ident[0]}.{ident[1]}" in conflicting:
+            continue
+
+        rendered = handle in set(verdict.get("matched_handles") or ())
+        quotable = is_quotable_metafield(ident[0], mf_type, values)
+        field_name = (
+            FREE_FROM_FIELD if ident in FREE_FROM_KEYS else f"{ident[0]}.{ident[1]}"
         )
-        trust = _trust_class(verdict.get("reason", ""), rendered)
-        label = verdict.get("label")
-        field_name = f"{ident[0]}.{ident[1]}"
-        joined = "; ".join(values) if len(values) > 1 else values[0]
         out.append(
             Assertion(
-                field_name, label, joined, f"metafield:{field_name}", "metafield",
-                rendered, trust, mf.get("updatedAt"),
+                field_name,
+                verdict.get("label"),
+                "; ".join(values) if len(values) > 1 else values[0],
+                f"metafield:{ident[0]}.{ident[1]}",
+                "metafield",
+                rendered,
+                "quotable" if quotable else "retrieval",
+                mf.get("updatedAt"),
             )
         )
 
-    template_key = product.get("template_suffix") or product.get("product_type") or "_default"
-    for i, value in enumerate(template_constants.get(template_key, [])):
+    key = template_key(product)
+    for i, constant in enumerate(template_constants.get(key, [])):
+        label = constant.get("label")
+        quotable = bool(label) and is_quotable_theme_value(constant["value"])
         out.append(
             Assertion(
-                f"theme.constant_{i}", None, value, f"theme:{template_key}", "theme",
-                True, "quotable", None,
+                label.lower().replace(" ", "_") if label else f"theme.constant_{i}",
+                label,
+                constant["value"],
+                f"theme:{key}",
+                "theme",
+                True,
+                "quotable" if quotable else "retrieval",
+                None,
             )
         )
 
@@ -132,7 +236,6 @@ def build_assertions(
 
 
 def build_edges(product: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every product_reference and metaobject_reference becomes an edge."""
     rows: list[dict[str, Any]] = []
     pid = str(product["product_id"])
 
@@ -194,8 +297,17 @@ def run(store: StoreConfig) -> dict[str, Any]:
     }
     constants = (profile.get("template_constants") or {}).get("by_template") or {}
     rejected = profile.get("rejected") or []
+    description_rendered = frozenset(profile.get("description_rendered_handles") or ())
+    crawled = frozenset(profile.get("region_words") or {})
 
-    counts = {"products": 0, "assertions": 0, "edges": 0, "quotable": 0, "retrieval": 0}
+    counts = {
+        "products": 0,
+        "assertions": 0,
+        "edges": 0,
+        "quotable": 0,
+        "retrieval": 0,
+        "abandoned_skipped": 0,
+    }
 
     with db.connect() as conn:
         store_id = db.upsert_store(conn, store.slug, store.domain, store.admin_api_version)
@@ -218,21 +330,39 @@ def run(store: StoreConfig) -> dict[str, Any]:
             conn,
             store_id,
             [
-                {"template_key": tpl, "value": value, "label": None, "value_hash": sha256(value)}
+                {
+                    "template_key": tpl,
+                    "value": c["value"],
+                    "label": c.get("label"),
+                    "value_hash": sha256(c["value"]),
+                }
                 for tpl, values in constants.items()
-                for value in values
+                for c in values
             ],
         )
 
+        abandoned = [
+            str(p["product_id"])
+            for p in products
+            if p.get("online_store_url") and not p.get("sellable", True)
+        ]
+        counts["abandoned_skipped"] = len(abandoned)
+        counts["abandoned_deleted"] = db.delete_products(conn, store_id, abandoned)
+        skip = set(abandoned)
+
         for product in products:
-            # One transaction per product: assertions, variants and edges land together
-            # so retrieval never sees new text beside old attributes.
+            if str(product["product_id"]) in skip:
+                continue
             product_id = db.upsert_product(conn, store_id, product)
             db.upsert_variants(conn, product_id, product.get("variants") or [])
 
-            assertions = build_assertions(product, allowlist, constants)
+            assertions = build_assertions(
+                product, allowlist, constants, description_rendered, crawled
+            )
+            db.replace_assertions(
+                conn, product_id, [a.to_row() for a in assertions]
+            )
             for assertion in assertions:
-                db.upsert_assertion(conn, product_id, assertion.to_row())
                 counts[assertion.trust_class] += 1
 
             edges = build_edges(product)

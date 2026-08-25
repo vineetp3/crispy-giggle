@@ -34,17 +34,22 @@ class FetchOutcome:
     error: str | None = None
 
 
-# --------------------------------------------------------------------------- #
-# page selection
-# --------------------------------------------------------------------------- #
+def template_key(product: dict[str, Any]) -> str:
+    for field_name in ("template_suffix", "product_type"):
+        value = (product.get(field_name) or "").strip().lower()
+        if value:
+            return value
+    return "_default"
+
 
 def selectable(products: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Only products published to the online store have a fetchable URL."""
-    return [p for p in products if p.get("online_store_url")]
+    return [
+        p for p in products
+        if p.get("online_store_url") and p.get("sellable", True)
+    ]
 
 
 def select_pages(store: StoreConfig, products: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Choose which product pages to fetch, honouring crawl_scope and sampling."""
     if store.crawl_scope == "none":
         return []
 
@@ -56,15 +61,16 @@ def select_pages(store: StoreConfig, products: list[dict[str, Any]]) -> list[dic
         return pool[: store.max_pages]
 
     if store.crawl_scope == "template_representatives":
-        chosen: dict[str | None, dict[str, Any]] = {}
+        chosen: dict[str, dict[str, Any]] = {}
         for p in pool:
-            key = p.get("template_suffix") or p.get("product_type")
-            chosen.setdefault(key, p)
+            chosen.setdefault(template_key(p), p)
         return list(chosen.values())[: store.max_pages]
 
-    # crawl_scope == "sample"
     budget = min(store.profile_pages, store.max_pages)
     return _sample(store, pool, budget)
+
+
+GROUP_FLOOR = 3
 
 
 def _sample(
@@ -87,29 +93,37 @@ def _sample(
         rng = random.Random(store.sampling_seed)
         return rng.sample(pool, min(budget, len(pool)))
 
-    # by_template / by_product_type: spread the budget across groups so the sample
-    # covers layout variety rather than one template repeated.
-    key = "template_suffix" if mode == "by_template" else "product_type"
-    groups: dict[Any, list[dict[str, Any]]] = {}
+    if mode == "by_product_type":
+        def key_of(p: dict[str, Any]) -> str:
+            return (p.get("product_type") or "").strip().lower() or "_default"
+    else:
+        key_of = template_key
+
+    groups: dict[str, list[dict[str, Any]]] = {}
     for p in pool:
-        groups.setdefault(p.get(key), []).append(p)
+        groups.setdefault(key_of(p), []).append(p)
 
     rng = random.Random(store.sampling_seed)
     for items in groups.values():
         rng.shuffle(items)
 
+    order = sorted(groups)
     picked: list[dict[str, Any]] = []
-    order = sorted(groups, key=lambda k: (k is None, str(k)))
+
+    for want in range(1, GROUP_FLOOR + 1):
+        for k in order:
+            if len(picked) >= budget:
+                return picked
+            taken = sum(1 for p in picked if key_of(p) == k)
+            if taken < want and groups[k]:
+                picked.append(groups[k].pop())
+
     while len(picked) < budget and any(groups[k] for k in order):
         for k in order:
             if groups[k] and len(picked) < budget:
                 picked.append(groups[k].pop())
     return picked
 
-
-# --------------------------------------------------------------------------- #
-# fetching
-# --------------------------------------------------------------------------- #
 
 def _looks_blocked(status: int | None, body: str) -> bool:
     if status == 403:
@@ -124,7 +138,7 @@ def _escalation_ladder(start: str) -> list[str]:
 
 
 def _browser_config(profile: str, store: StoreConfig):
-    from crawl4ai import BrowserConfig  # imported lazily; pulls playwright
+    from crawl4ai import BrowserConfig
 
     kwargs: dict[str, Any] = {"headless": True, "verbose": False}
     if profile == "stealth":
@@ -164,7 +178,6 @@ def _dispatcher(store: StoreConfig):
 async def _crawl_batch(
     store: StoreConfig, targets: list[dict[str, Any]], profile: str
 ) -> dict[str, tuple[Any, str]]:
-    """Crawl a batch at one fetch profile. Returns handle -> (result, profile)."""
     from crawl4ai import AsyncWebCrawler
 
     by_url = {t["online_store_url"]: t["handle"] for t in targets}
@@ -186,7 +199,6 @@ async def _crawl_batch(
 async def fetch_pages(
     store: StoreConfig, targets: list[dict[str, Any]]
 ) -> list[FetchOutcome]:
-    """Fetch every target, escalating the fetch profile for pages that look blocked."""
     ensure_dirs(store)
     if store.fetch_manifest_path.exists():
         store.fetch_manifest_path.unlink()
@@ -265,7 +277,6 @@ async def fetch_pages(
 
 
 def _markdown_of(result: Any) -> str:
-    """Crawl4AI has moved this attribute between versions; try the known shapes."""
     md = getattr(result, "markdown", None)
     if md is None:
         return ""
