@@ -128,13 +128,27 @@ catch it — it keys on namespace, key and type, none of which a theme constant 
 `Formula: 3.8% Hydrogen Peroxide` is a real concentration. Verified 0 promotional theme facts
 quotable on either store.
 
-remi's seven remaining scoped failures are genuine content gaps, not retrieval misses: no
-quotable count of nozzles on the flosser or tablets in a pack, no ingredients on `whitening-gel`,
-no usage frequency on any of three products, and no material on `mouth-night-guard-removal-tool`.
-The last is worth noting: the label `Removal Tool Material` exists in remi's theme, but on
-another product's page, so store-level reachability says `theme` while that product cannot
-answer. `attributes.py` warns about exactly this gap between store reachability and per-product
-answerability, and the scoped score is the first thing to actually measure it.
+**Two claims made here earlier were wrong, and the correction matters more than the numbers.**
+This document previously called the missing tablet count and the missing removal-tool material
+"genuine content gaps". Both facts are on the page:
+
+- `deep-clean-freshening-tablets` renders `Quantity: 120 tablets (roughly 4 months of daily use)`.
+  The pair extracts cleanly and is discarded because `quantity` sits on the not-a-label denylist
+  in `blocks.py`, next to `select`, `filter` and `qty`, where it exists to reject the cart
+  quantity picker.
+- `mouth-night-guard-removal-tool` renders `Material: Food-grade material, BPA-free, and
+  phthalate-free`. It is discarded because theme facts are only written from template constants —
+  pairs shared across a template group — and a spec on a single product's page is classed
+  per-product theme content and dropped.
+
+So of remi's seven remaining scoped failures, at least two are extraction defects rather than
+missing content, and the same is true of an unknown share of the rest. **Treat the current scoped
+answerability numbers as a floor, not a measurement of what these stores can answer.**
+`docs/PENDING.md` carries the analysis and the options.
+
+A related distinction still holds and is worth keeping: store-level reachability and per-product
+answerability are different things. `attributes.py` warns about the gap, and the scoped score is
+the first thing to measure it.
 
 `deep-clean-freshening-tablets` produced a **false pass** before identity fields were excluded:
 the literal check matched the product's own title, `Deep Clean + Freshening Tablets`, which says

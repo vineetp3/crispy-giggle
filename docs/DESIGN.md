@@ -675,7 +675,11 @@ re-ingestion would provide.
 
 ## 10. Open items
 
-Resolved items and their measured outcomes are in `docs/FINDINGS.md`. What remains open:
+Resolved items and their measured outcomes are in `docs/FINDINGS.md`. This section is the terse
+register of *whether* an item is open; `docs/PENDING.md` carries the evidence, the options and the
+tradeoffs for each, and is the document to read before picking one up.
+
+What remains open:
 
 - [ ] **The reranker has never executed, and whether it stays in v0 is undecided.**
       `COHERE_API_KEY` is a placeholder, Cohere returns 401, and every recall figure recorded so
@@ -743,6 +747,16 @@ Resolved items and their measured outcomes are in `docs/FINDINGS.md`. What remai
       so a three-year-old allergen declaration is visibly three years old. Whether that is
       acceptable to repeat to a shopper is a business decision and belongs with whoever owns that
       risk, not in this document.
+
+- [ ] **Theme spec extraction — the label gate.** Facts plainly visible on a product page are not
+      becoming queryable facts. Two causes remain: the not-a-label denylist is global and
+      store-blind (`quantity` is rejected as a cart widget, and on remi's tablets it is a real
+      spec), and per-product theme specs are never stored at all because `merge` writes theme
+      assertions only from template constants. Agreed direction: per-store label allow/deny lists
+      in `config/stores.yaml`, plus storing per-product pairs as `retrieval` by default and
+      promoting only allow-listed labels to `quotable`. An LLM classification pass is under
+      consideration and would reopen the §9 boundary. Full analysis in `docs/PENDING.md` §1.
+      **Current scoped answerability figures are a floor, not a measurement.**
 
 - [ ] Whether a metafield write fires `products/update`. Irrelevant to v0, required before any
       incremental design.

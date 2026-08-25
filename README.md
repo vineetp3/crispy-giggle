@@ -5,7 +5,8 @@ metafields and rendered storefront HTML, work out where each publisher's product
 actually lives, load it into Postgres with provenance, and query it.
 
 **Read `docs/DESIGN.md` first.** It is the build specification and the decisions register.
-`docs/FINDINGS.md` records what the live runs measured.
+`docs/FINDINGS.md` records what the live runs measured, and `docs/PENDING.md` is the unfinished
+work with the options and tradeoffs for each.
 
 The deliverable is `poc report` — the per-store profile, headed by which attributes each store
 can answer and from which source. `poc search` exists to validate it.
