@@ -3,23 +3,31 @@
 # Authored 2026-08-25 from `poc labels --store skout`. The six per-product labels were
 # written before any classifier ran; `The Bad News` and `The Good News` were added
 # afterwards but before the classifier was shown them. This file is both the input to the
-# `static` policy and the ground truth the `llm` policy is scored against, so it must not
-# be edited after seeing model output for a label.
+# `static` policy and the ground truth the `llm` policy is scored against. Editing it after
+# seeing model output invalidates the scores, so any such edit must be recorded, as the one
+# below is.
 #
 #   spec       a durable property of the product; may become quotable
 #   widget     storefront control, page title or marketing heading; never stored
 #   uncertain  genuine product content that is not a checkable property; retrieval only
 #
-# Every label this store renders as a spec pair is either a cart control or a marketing
-# heading. `Pack Size` reads like a specification and is a variant selector, which is why
-# a global rule tuned on this store would reject remi's genuine `Quantity`.
+# `Pack Size` and `Size` were authored as `widget` on 2026-08-25 and changed to `spec` the
+# same day by product decision, after the measurement showed suppressing them cost two
+# scoped answers. They remain variant selectors; the decision is that quoting the available
+# pack sizes to a shopper is acceptable and useful. It makes 111 picker values quotable.
+# Reverse by setting both back to `widget`.
+#
+# This change happened AFTER the classifier was scored against this file, so `docs/FINDINGS.md`
+# 7 keeps the original numbers. Scored against the file as it now stands, skout agreement
+# would be 6/8 rather than 4/8. That is a decision moving toward the model, not evidence
+# the model was right, and the two must not be conflated.
 
 labels:
   "About the shirt": uncertain
   "Delivery Frequency": widget
-  "Pack Size": widget
+  "Pack Size": spec
   "Pro Tip": uncertain
-  "Size": widget
+  "Size": spec
   "The Bad News": widget
   "The Good News": widget
   "This item": widget

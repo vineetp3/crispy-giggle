@@ -404,7 +404,32 @@ by someone who had read the pages; it does not show that no classifier could. Th
 generalisation question — a store nobody has looked at — is untouched by this measurement
 and belongs with third-store validation.
 
-### skout's fall from 0.87 to 0.78 is a judgement, not a defect
+### skout's fall from 0.87 to 0.78 was a judgement, and it was reversed
+
+**Decided 2026-08-25: `Pack Size` and `Size` are quotable on skout.** The measurement was put
+to the product owner and the call was that quoting available pack sizes to a shopper is
+acceptable and useful. skout returns to 0.87 scoped answerability with 111 picker values
+quotable. `Delivery Frequency` and `This item` stay suppressed, and those two are what the
+regression guard now means.
+
+Final state, both stores, `static` policy:
+
+| | skout | remi |
+|---|---|---|
+| Assertions (quotable / retrieval) | 2,183 (1,473 / 710) | 639 (387 / 252) |
+| Theme-sourced assertions | 116 | 76 |
+| Discovery recall@5 | 0.92 | 1.00 |
+| Scoped answerability | 0.87 | **0.75** (was 0.65) |
+| Constraint violations | 0 | 0 |
+
+**This edit came after the classifier was scored, and the scores above were not restated.**
+Against the reference set as it now stands, skout agreement would read 6/8 rather than 4/8.
+That is the reference moving toward the model, not evidence the model was right, and the two
+must not be conflated. The classifier's remi errors are untouched by the decision: it still
+reads `Quantity` as a widget.
+
+The reasoning behind the original judgement, retained because it is the argument any future
+store will have to re-run:
 
 Two questions of the form *how many bars come in a pack* were previously answered by `Pack
 Size`, the variant picker. Suppressing it removes those answers. A picker does list the

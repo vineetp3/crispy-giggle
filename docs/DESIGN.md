@@ -773,9 +773,9 @@ What remains open:
 - [x] **Theme spec extraction — the label gate.** Closed 2026-08-25. Three extraction defects
       were fixed and a per-store label policy now decides whether a recovered `Label: Value`
       pair is a product specification or a storefront widget. remi's scoped answerability rose
-      from 0.65 to 0.75; skout's fell from 0.87 to 0.78 because two questions were previously
-      answered by a variant picker. 124 widget assertions that were quotable on skout no longer
-      are. The LLM classifier was built, measured and left off by default — see §9's amendment
+      from 0.65 to 0.75 and skout holds 0.87. `Delivery Frequency` and `This item` are no
+      longer quotable on skout; `Pack Size` and `Size` deliberately still are, by a product
+      decision recorded in `docs/PENDING.md` §1a. The LLM classifier was built, measured and left off by default — see §9's amendment
       and `docs/FINDINGS.md` §7. Two consequences worth carrying forward, both in
       `docs/PENDING.md`: the reference sets are one reader's judgement on two stores, and
       whether a variant picker legitimately answers "how many come in a pack" is an unsettled

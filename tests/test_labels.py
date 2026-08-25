@@ -1,10 +1,15 @@
 """The label gate: spec, widget or uncertain, and what each verdict is allowed to do.
 
-The cases below are the two failures that motivated the gate. remi renders
+The cases below are the failures that motivated the gate. remi renders
 `Quantity: 120 tablets (roughly 4 months of daily use)`, which the global denylist used to
-reject as a cart widget. skout renders `Pack Size: 6 Pack`, which reads like a
-specification and is a variant picker. Both stores are right about their own store, which
-is why the decision is per store rather than global.
+reject as a cart widget. skout renders `Delivery Frequency: One-time`, which no rule keyed
+on wording alone can separate from a real specification. Both stores are right about their
+own store, which is why the decision is per store rather than global.
+
+skout's `Pack Size` is deliberately NOT the example here. It is a variant picker that the
+product owner chose to keep quotable, so it is a live policy decision rather than a fixed
+property, and a test asserting either verdict would break the next time that call is
+revisited. See docs/PENDING.md 1a.
 """
 
 from __future__ import annotations
@@ -61,13 +66,18 @@ def test_none_policy_rejects_every_per_product_pair():
 def test_static_policy_reads_the_reference_set():
     policy = StaticPolicy(directory=REFERENCE)
     assert policy.verdict(store("remi"), "Quantity", "120 tablets") == SPEC
-    assert policy.verdict(store("skout"), "Pack Size", "6 Pack") == WIDGET
+    assert policy.verdict(store("skout"), "Delivery Frequency", "One-time") == WIDGET
 
 
 def test_the_same_label_may_differ_between_stores():
+    """`Quantity` is a real count on remi and a cart control on most stores.
+
+    skout renders no `Quantity` pair, so the pairing shown here is `Quantity` against the
+    subscription selector that the same global rule would have to cover.
+    """
     policy = StaticPolicy(directory=REFERENCE)
     assert policy.verdict(store("remi"), "Quantity", "120 tablets") == SPEC
-    assert policy.verdict(store("skout"), "Size", "35 Pack") == WIDGET
+    assert policy.verdict(store("skout"), "Delivery Frequency", "Every 4 weeks") == WIDGET
 
 
 def test_an_unlisted_label_is_uncertain_not_widget():
@@ -83,8 +93,8 @@ def test_manual_deny_overrides_the_reference_set():
 
 def test_manual_allow_overrides_the_reference_set():
     policy = StaticPolicy(directory=REFERENCE)
-    cfg = store("skout", spec_label_allow=["Pack Size"])
-    assert policy.verdict(cfg, "Pack Size", "6 Pack") == SPEC
+    cfg = store("skout", spec_label_allow=["Delivery Frequency"])
+    assert policy.verdict(cfg, "Delivery Frequency", "One-time") == SPEC
 
 
 def test_manual_deny_beats_manual_allow():
@@ -148,12 +158,12 @@ def test_classifier_falls_back_to_uncertain_on_an_unparseable_answer(tmp_path):
 
 
 def test_classifier_never_overrides_a_manual_deny(tmp_path):
-    cfg = store("skout", spec_label_deny=["Pack Size"])
+    cfg = store("skout", spec_label_deny=["Delivery Frequency"])
     client = StubClient("SPEC")
     policy = ClassifierPolicy(client=client)
     policy._cache = {"skout": {}}
     policy.cache_path = lambda _s: tmp_path / "verdicts.json"
-    assert policy.verdict(cfg, "Pack Size", "6 Pack") == WIDGET
+    assert policy.verdict(cfg, "Delivery Frequency", "One-time") == WIDGET
     assert client.calls == 0
 
 
@@ -169,7 +179,7 @@ PRODUCT = {
 PER_PRODUCT = {
     "deep-clean-freshening-tablets": [
         {"label": "Quantity", "value": "120 tablets, about 4 months of daily use"},
-        {"label": "Pack Size", "value": "6 Pack"},
+        {"label": "Delivery Frequency", "value": "One-time"},
         {"label": "Nobody Has Ruled On This", "value": "some value"},
     ]
 }
@@ -201,8 +211,27 @@ def test_spec_becomes_quotable_and_uncertain_becomes_retrieval():
 
 
 def test_a_widget_label_is_never_stored_at_all():
-    labels = {a.label for a in theme_assertions(StaticPolicy(directory=REFERENCE), "skout")}
-    assert "Pack Size" not in labels
+    per_product = {
+        PRODUCT["handle"]: [
+            {"label": "Delivery Frequency", "value": "One-time"},
+            {"label": "Pro Tip", "value": "Try them warm!"},
+        ]
+    }
+    out = [
+        a
+        for a in build_assertions(
+            PRODUCT,
+            {},
+            {},
+            per_product=per_product,
+            policy=StaticPolicy(directory=REFERENCE),
+            store=store("skout"),
+        )
+        if a.source_kind == "theme"
+    ]
+    labels = {a.label for a in out}
+    assert "Delivery Frequency" not in labels
+    assert "Pro Tip" in labels
 
 
 def test_repeated_labels_on_one_product_do_not_collide():

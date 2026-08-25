@@ -39,17 +39,16 @@ the `merge` default. Earlier revisions of this table are superseded; see `docs/F
 | | skout | remi |
 |---|---|---|
 | Products indexed | 171 | 48 |
-| Assertions (quotable / retrieval) | 2,069 (1,362 / 707) | 639 (387 / 252) |
-| Theme-sourced assertions | 2 | 76 |
+| Assertions (quotable / retrieval) | 2,183 (1,473 / 710) | 639 (387 / 252) |
+| Theme-sourced assertions | 116 | 76 |
 | Attribute reachability | api 4, theme 2, image 3, absent 4 | theme 6, absent 4 |
 | Discovery recall@5 | 0.92 | 1.00 |
-| Scoped answerability | 0.78 (was 0.87) | 0.75 (was 0.65) |
+| Scoped answerability | 0.87 | 0.75 (was 0.65) |
 | Constraint violations | 0 | 0 |
 
-skout's theme-sourced count falls from 118 to 2 because the label gate suppresses variant
-and subscription pickers that were previously stored, and quotable at that. Its scoped
-answerability falls with them; §1a explains why that is a judgement rather than a
-regression.
+skout holds its 0.87 because `Pack Size` and `Size` were deliberately kept quotable; see §1a.
+`Delivery Frequency` and `This item` are suppressed, which is what the regression guard now
+means.
 
 ---
 
@@ -68,18 +67,24 @@ classification is in `docs/DESIGN.md`. Summary of what changed and what it cost:
   phthalate-free` is the clearest case.
 - A per-store label policy now decides spec, widget or uncertain, applied at merge so the
   arms differ by one flag. Unrecognised labels become retrieval assertions, never quotable.
-- remi scoped answerability 0.65 → 0.75. skout 0.87 → 0.78, discussed below. Discovery
-  recall and constraint violations unchanged.
-- 124 widget assertions that were quotable on skout no longer are.
+- remi scoped answerability 0.65 → 0.75. skout holds 0.87. Discovery recall and constraint
+  violations unchanged on both stores.
+- `Delivery Frequency` and `This item` are no longer quotable on skout. `Pack Size` and
+  `Size` deliberately still are; see §1a.
 
 Two questions this raised, both open:
 
-**1a. Does a variant picker answer "how many bars come in a pack"?** skout's fall from 0.87
-to 0.78 is two questions previously answered by `Pack Size`, which is a variant selector.
-The reference set treats a control's current selection as not a property of the product.
-That is a defensible position and not the only one. Reversing it for this store is one line
-in `config/stores.yaml` (`spec_label_allow: ["Pack Size"]`) and would make 101 picker values
-quotable again. Whoever owns the risk of quoting them should decide, not this document.
+**1a. Does a variant picker answer "how many bars come in a pack"? Decided for skout, open
+in general.** Suppressing `Pack Size` and `Size` cost two scoped answers and dropped skout
+to 0.78. The call was made to keep them quotable, so skout holds 0.87 and 111 picker values
+are quotable. `Delivery Frequency` and `This item` remain suppressed.
+
+What stays open is the general rule. The decision was made per store, by a person, on
+evidence — which is the mechanism working as intended, but it does not scale to a store
+nobody has read. A third store will pose the same question with no one to answer it, which
+is the strongest argument for either a better classifier or an explicit rule about what a
+selector may be quoted for. Reverse for skout by setting both labels back to `widget` in
+`config/spec_labels/skout.yaml`.
 
 **1b. The reference sets are one reader's judgement on two stores.** `config/spec_labels/`
 holds 38 hand-authored verdicts. Precision figures measured against them are agreement with
