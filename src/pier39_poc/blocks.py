@@ -168,7 +168,7 @@ def product_region(
 NOT_A_LABEL_PATTERNS = (
     r"^(sold out|out of stock|in stock|bonus|new|sale|free)$",
     r"^(read|learn|shop|see|view|buy|add|get|save|try)\b",
-    r"^(select|choose|pick|enter|search|filter|sort|quantity|qty)\b",
+    r"^(select|choose|pick|enter|search|filter|sort)\b",
     r"^[$£€]",
     r"^\d",
     r"^/",
@@ -186,6 +186,10 @@ def looks_like_label(text: str) -> bool:
 
 _INLINE_LABEL_RE = re.compile(r"^([^:]{1,60}):\s+(\S.*)$")
 _NUMERIC_VALUE_RE = re.compile(r"^[\d\s/.,:%+-]+$")
+
+
+def is_numeric_value(text: str) -> bool:
+    return bool(_NUMERIC_VALUE_RE.match((text or "").strip()))
 
 
 def inline_label(text: str) -> tuple[str, str] | None:

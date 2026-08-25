@@ -44,6 +44,7 @@ from .artifacts import load_products, read_json, record_stage, sha256
 from .blocks import visible_text
 from .config import StoreConfig
 from .crawl import template_key
+from .labels import SPEC, UNCERTAIN, WIDGET, LabelPolicy, NonePolicy
 from .matching import (
     FREE_FROM_FIELD,
     FREE_FROM_KEYS,
@@ -160,6 +161,9 @@ def build_assertions(
     template_constants: dict[str, list[dict[str, Any]]],
     description_rendered: frozenset[str] = frozenset(),
     crawled: frozenset[str] = frozenset(),
+    per_product: dict[str, list[dict[str, Any]]] | None = None,
+    policy: LabelPolicy | None = None,
+    store: StoreConfig | None = None,
 ) -> list[Assertion]:
     out: list[Assertion] = []
     handle = product.get("handle") or ""
@@ -216,8 +220,12 @@ def build_assertions(
         )
 
     key = template_key(product)
+    gate = policy or NonePolicy()
     for i, constant in enumerate(template_constants.get(key, [])):
         label = constant.get("label")
+        if label and gate.gates_template_constants and store is not None:
+            if gate.verdict(store, label, constant["value"]) == WIDGET:
+                continue
         quotable = bool(label) and is_quotable_theme_value(constant["value"])
         out.append(
             Assertion(
@@ -225,6 +233,32 @@ def build_assertions(
                 label,
                 constant["value"],
                 f"theme:{key}",
+                "theme",
+                True,
+                "quotable" if quotable else "retrieval",
+                None,
+            )
+        )
+
+    used: dict[str, int] = {}
+    for pair in (per_product or {}).get(handle, []):
+        label = pair.get("label")
+        if not label:
+            continue
+        verdict = gate.verdict(store, label, pair["value"]) if store else "widget"
+        if verdict not in (SPEC, UNCERTAIN):
+            continue
+        quotable = verdict == SPEC and is_quotable_theme_value(pair["value"])
+        field = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "theme_spec"
+        used[field] = used.get(field, 0) + 1
+        if used[field] > 1:
+            field = f"{field}_{used[field]}"
+        out.append(
+            Assertion(
+                field,
+                label,
+                pair["value"],
+                f"theme:{handle}",
                 "theme",
                 True,
                 "quotable" if quotable else "retrieval",
@@ -288,7 +322,7 @@ def build_edges(product: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def run(store: StoreConfig) -> dict[str, Any]:
+def run(store: StoreConfig, policy: LabelPolicy | None = None) -> dict[str, Any]:
     products = load_products(store)
     profile = read_json(store.profile_path)
 
@@ -296,9 +330,15 @@ def run(store: StoreConfig) -> dict[str, Any]:
         (entry["namespace"], entry["key"]): entry for entry in profile.get("allowlist", [])
     }
     constants = (profile.get("template_constants") or {}).get("by_template") or {}
+    per_product = (profile.get("template_constants") or {}).get("per_product") or {}
+    gate = policy or NonePolicy()
     rejected = profile.get("rejected") or []
     description_rendered = frozenset(profile.get("description_rendered_handles") or ())
     crawled = frozenset(profile.get("region_words") or {})
+
+    template_key_for = {
+        p["handle"]: template_key(p) for p in products if p.get("handle")
+    }
 
     counts = {
         "products": 0,
@@ -338,6 +378,17 @@ def run(store: StoreConfig) -> dict[str, Any]:
                 }
                 for tpl, values in constants.items()
                 for c in values
+            ]
+            + [
+                {
+                    "template_key": template_key_for.get(h, "_default"),
+                    "handle": h,
+                    "value": c["value"],
+                    "label": c.get("label"),
+                    "value_hash": sha256(c["value"]),
+                }
+                for h, values in per_product.items()
+                for c in values
             ],
         )
 
@@ -357,7 +408,14 @@ def run(store: StoreConfig) -> dict[str, Any]:
             db.upsert_variants(conn, product_id, product.get("variants") or [])
 
             assertions = build_assertions(
-                product, allowlist, constants, description_rendered, crawled
+                product,
+                allowlist,
+                constants,
+                description_rendered,
+                crawled,
+                per_product,
+                gate,
+                store,
             )
             db.replace_assertions(
                 conn, product_id, [a.to_row() for a in assertions]

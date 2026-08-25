@@ -254,7 +254,7 @@ def assertions_for(
         return []
     rows = conn.execute(
         """
-        SELECT field, label, value, source, source_kind, trust_class,
+        SELECT id, field, label, value, source, source_kind, trust_class,
                rendered, source_updated_at
         FROM field_assertions
         WHERE product_id = ANY(%s)

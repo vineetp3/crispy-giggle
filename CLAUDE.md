@@ -1,0 +1,5 @@
+- Don't use worktrees unless asked by user
+- Don't push branches unless asked by user
+- Don't commit code unless asked by user
+- Don't add comments to code unless asked by user
+- Scope is user's to widen

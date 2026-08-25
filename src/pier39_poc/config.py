@@ -58,6 +58,9 @@ class StoreConfig:
     allowlist_min_support: int = 3
     allowlist_min_hit_rate: float = 0.8
 
+    spec_label_allow: list[str] = field(default_factory=list)
+    spec_label_deny: list[str] = field(default_factory=list)
+
     storefront_api_version: str = "2026-01"
     market_country: str = "US"
 

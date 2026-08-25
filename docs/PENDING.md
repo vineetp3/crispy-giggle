@@ -1,6 +1,6 @@
 # Pending work
 
-**Last updated:** 2026-08-25.
+**Last updated:** 2026-08-25 (label gate closed).
 
 The working list of unfinished work, with the evidence behind each item and the options
 considered. Written to be picked up by someone with no prior context.
@@ -26,134 +26,79 @@ Pipeline, one CLI subcommand per stage:
 docker compose up -d db
 uv run poc report --store remi     # the deliverable; reads the existing database
 uv run poc eval   --store remi
-uv run pytest -q                   # 90 tests, no token needed
+uv run pytest -q                   # 131 tests, no token needed
 ```
 
 `.env` holds `PIER39_SHOPIFY_TOKENS` and `OPENAI_API_KEY`. `COHERE_API_KEY` is a placeholder.
 `PIER39_SHOPIFY_STOREFRONT_TOKENS` is unset.
 
-**State as of this writing** — all uncommitted on `main`:
+**State as of this writing** — measured 2026-08-25 with the `static` label policy, which is
+the `merge` default. Earlier revisions of this table are superseded; see `docs/FINDINGS.md`
+§7 for the arm-by-arm comparison behind the two changed rows.
 
 | | skout | remi |
 |---|---|---|
 | Products indexed | 171 | 48 |
-| Assertions (quotable / retrieval) | 2,185 (1,473 / 712) | 636 (384 / 252) |
-| Theme-sourced assertions | 118 | 73 |
+| Assertions (quotable / retrieval) | 2,183 (1,473 / 710) | 639 (387 / 252) |
+| Theme-sourced assertions | 116 | 76 |
 | Attribute reachability | api 4, theme 2, image 3, absent 4 | theme 6, absent 4 |
-| Discovery recall@5 | 0.92 (23/25) | 1.00 (22/22) |
-| Scoped answerability | 0.87 (20/23) | 0.65 (13/20) |
+| Discovery recall@5 | 0.92 | 1.00 |
+| Scoped answerability | 0.87 | 0.75 (was 0.65) |
 | Constraint violations | 0 | 0 |
+
+skout holds its 0.87 because `Pack Size` and `Size` were deliberately kept quotable; see §1a.
+`Delivery Frequency` and `This item` are suppressed, which is what the regression guard now
+means.
 
 ---
 
-## 1. Theme spec extraction — the label gate *(highest priority, direction agreed)*
+## 1. Theme spec extraction — the label gate *(closed 2026-08-25)*
 
-### The problem
+Closed. Full measurements in `docs/FINDINGS.md` §7; the §9 amendment permitting label
+classification is in `docs/DESIGN.md`. Summary of what changed and what it cost:
 
-Facts plainly visible on a product page are not becoming queryable facts. Four distinct causes
-were found; two are fixed, two are not.
+- Three extraction defects fixed. The `quantity` denylist entry is gone, the `label_for`
+  path gained a numeric guard, and labelled pairs are now recovered from the whole product
+  region rather than only from residual blocks.
+- **The third was the real cause, and this document had it wrong.** Per-product specs were
+  not lost because `merge` writes only template constants. They were lost at extraction: a
+  spec whose text also appeared in `description_html` was classed as already explained and
+  never became a typed pair. remi's `Material: Food-grade material, BPA-free, and
+  phthalate-free` is the clearest case.
+- A per-store label policy now decides spec, widget or uncertain, applied at merge so the
+  arms differ by one flag. Unrecognised labels become retrieval assertions, never quotable.
+- remi scoped answerability 0.65 → 0.75. skout holds 0.87. Discovery recall and constraint
+  violations unchanged on both stores.
+- `Delivery Frequency` and `This item` are no longer quotable on skout. `Pack Size` and
+  `Size` deliberately still are; see §1a.
 
-**Fixed already:**
+Two questions this raised, both open:
 
-- Group chrome was discarded before template-constant extraction, so any template group with two
-  or more crawled pages lost its entire spec table.
-- A spec rendered as a single text run (`Material: Dental-grade polymer`) could not be read,
-  because `blocks.label_for` only handles a label node followed by a value node.
-  `blocks.inline_label` now handles the first shape.
+**1a. Does a variant picker answer "how many bars come in a pack"? Decided for skout, open
+in general.** Suppressing `Pack Size` and `Size` cost two scoped answers and dropped skout
+to 0.78. The call was made to keep them quotable, so skout holds 0.87 and 111 picker values
+are quotable. `Delivery Frequency` and `This item` remain suppressed.
 
-**Still open:**
+What stays open is the general rule. The decision was made per store, by a person, on
+evidence — which is the mechanism working as intended, but it does not scale to a store
+nobody has read. A third store will pose the same question with no one to answer it, which
+is the strongest argument for either a better classifier or an explicit rule about what a
+selector may be quoted for. Reverse for skout by setting both labels back to `widget` in
+`config/spec_labels/skout.yaml`.
 
-**1a. The not-a-label denylist is global and store-blind.** `blocks.NOT_A_LABEL_PATTERNS` rejects
-any label matching `select|choose|pick|enter|search|filter|sort|quantity|qty`, to keep storefront
-widgets out. On `deep-clean-freshening-tablets` the page renders:
+**1b. The reference sets are one reader's judgement on two stores.** `config/spec_labels/`
+holds 38 hand-authored verdicts. Precision figures measured against them are agreement with
+that judgement, not correctness. A second reader labelling the same 38 independently would
+show how much of the classifier's disagreement is model error and how much is genuine
+ambiguity. Cheap, and it has not been done.
 
-```
-<p><strong>Quantity:</strong> 120 tablets (roughly 4 months of daily use)
-```
-
-The pair extracts cleanly and is thrown away because `quantity` is denylisted. It is a cart widget
-on most stores and a real spec on this one.
-
-**1b. Per-product theme specs are never stored at all.** `merge.py` writes theme assertions only
-from **template constants** — spec pairs shared across every crawled page of a template group (the
-loop at `merge.py:219`). A spec appearing on a single product's page is classed as per-product
-theme content, counted toward coverage, and discarded. On remi this loses 9 real pairs:
-
-```
-mouth-night-guard-removal-tool   Material           = Food-grade material, BPA-free, phthalate-free
-night-guard-super-bundle         Material           = 10% Hydrogen Peroxide, BPA-free, phthalate-free
-night-guard-super-bundle         Treatment duration = On-going, use nightly
-uv-toothbrush-sanitizer          Kill rate          = 99.9% of bacteria
-deep-clean-freshening-tablets    Compatible with    = Night guards, retainers, aligners, dentures
-```
-
-### Why it cannot simply be relaxed
-
-Extraction is not the weak part — it finds 69 labelled pairs on remi and 303 on skout. The gate
-deciding which become facts is, and it is wrong in both directions. Storing per-product pairs
-naively floods skout, whose 222 unstored pairs are dominated by subscription widgets:
-
-| label | count |
-|---|---|
-| This item | 113 |
-| Pack Size | 53 |
-| Delivery Frequency | 50 |
-| everything else | 6 |
-
-A single global regex cannot separate "product spec" from "storefront widget" across two themes.
-`Quantity` is a widget on most stores and a spec here; `Pack Size` sounds like a spec and is a
-variant picker. Same conclusion `families.family_key` reached against a third store (item 6) —
-the rules are store-shaped.
-
-### Options
-
-**A — Per-store label allow/deny lists in `config/stores.yaml`.** *(agreed direction)*
-Each store gets `spec_labels.allow` / `spec_labels.deny`, applied on top of the global guards.
-Cheap, deterministic, inspectable, reversible per store.
-*Tradeoff:* manual work per store, and it concedes the deterministic rules do not generalise —
-which the POC was partly built to test. Accepted explicitly: attributes and their labels differ
-per store, so per-store configuration is expected rather than a workaround.
-
-**B — Store per-product spec pairs as `retrieval` by default, promote to `quotable` only for
-allow-listed labels.** *(agreed direction)*
-Keeps the material findable by search without risking a widget being quoted to a shopper as fact.
-Pairs naturally with A: the allow list is what promotes.
-*Tradeoff:* grows the retrieval corpus and the embedding cost; a real spec on an unlisted label
-stays unquotable until someone adds it.
-
-**C — One LLM pass classifying candidate `label: value` pairs as spec vs widget.** *(under
-consideration, not decided)*
-A model would trivially separate `Quantity: 120 tablets` from a cart picker, and `This item:` from
-`Material:`. The only option that generalises to a store nobody has looked at.
-*Tradeoff:* `DESIGN.md` §9 puts LLM extraction out of scope for v0 and §3 says such decisions are
-not to be relitigated casually, so this reopens a settled one. It adds a model dependency to the
-ingestion path, needs its own eval to show it beats the regex, and introduces non-determinism into
-a stage whose current virtue is reproducibility. Mitigation if adopted: classify only the *label*,
-cache by `(store, label)`, and keep the deterministic guards as a floor — the model can only ever
-demote, never promote past the commerce and quotability checks.
-
-### Recommended order
-
-A and B together first; they are agreed and independent of C. Handle `quantity` as part of A
-rather than as a special case: drop it from the global denylist when the value is not a bare
-integer. Then re-measure scoped answerability before deciding on C — if A+B closes most of the
-gap, C becomes a generalisation question rather than an accuracy one.
-
-### How to verify
-
-```bash
-uv run poc profile --store remi && uv run poc merge --store remi && uv run poc index --store remi
-uv run poc facts deep-clean-freshening-tablets --store remi --no-live
-uv run poc facts mouth-night-guard-removal-tool --store remi --no-live --attribute materials
-uv run poc eval --store remi    # scoped answerability should rise from 0.65
-uv run poc eval --store skout   # must NOT fall; watch for widget labels turning quotable
-```
-
-Regression guards: 0 promotional theme facts quotable (`profile.is_commerce_constant`), and
-`This item` / `Pack Size` / `Delivery Frequency` must never appear as quotable on skout.
-
-**Current scoped answerability numbers are a floor, not a measurement.** At least two of remi's
-seven failures are extraction defects rather than missing content.
+The classifier arm was built, measured twice and left off by default. `gpt-4o-mini` did
+not beat the hand-authored sets and read remi's `Quantity` as a widget, the case the item
+existed to fix. `gpt-5.5` reproduced every confident judgement in both reference sets, 29 of
+29, and promoted no widget to a specification. The earlier conclusion was therefore about
+the model, not about classification. It stays off by default because a cached deterministic
+file is cheaper and reviewable, but its case for a store nobody has read — item 6 — is now
+considerably stronger than the first run suggested.
 
 ---
 
@@ -180,50 +125,48 @@ the cheapest way to get a number.
 
 ---
 
-## 3. Chat layer — agreed shape, not started
+## 3. Chat layer — built, with a measured baseline *(2026-08-25)*
 
-Purpose is to strengthen the evals, not to ship a product. The end product is a storefront chatbot
-needing its own service; this is a playground.
+Built as the agreed A+D shape. `poc chat` is a REPL and `poc chat-replay` is a batch
+harness, both going through one `chat.answer`, so they cannot disagree about what the model
+was shown. Measurements and the scorer's own defects are in `docs/FINDINGS.md` §8.
 
-**Agreed shape: A + D over one shared answer function.**
+`src/pier39_poc/chat.py` and `src/pier39_poc/llm.py` are imported by the CLI only, never by
+an ingest stage, so `DESIGN.md` §9 stays honest.
 
-- **A — CLI REPL, single grounded call.** `poc chat --store remi [--product <handle>]`. Each turn
-  calls the existing retrieval, builds a prompt with quotable and retrieval material clearly
-  separated, makes one model call, prints the answer alongside the assertions it was given, and
-  logs the turn to JSONL.
-- **D — Batch replay harness.** Runs a list of questions through the *same* answer function and
-  scores groundedness automatically.
+**remi baseline: groundedness 0.85, and zero invalid citations across 42 turns.** The model
+never invented an assertion id and never cited a background fact as quotable. That is the
+first evidence that the quotable/retrieval split holds when a model is put in front of it.
 
-Building the answer function once means the REPL and the harness cannot disagree about what the
-model was shown.
+What remains open:
 
-Two details that make it pay off:
+**3a. skout has no baseline.** One command, 48 model calls.
 
-- Log turns in the same YAML shape as `config/questions/*.yaml`, so promoting a good turn into the
-  eval set is a copy rather than a translation. This also fixes the context problem that motivated
-  the scoped/discovery split: a playground holding a product in scope produces questions with the
-  scope attached.
-- Have the model cite assertion ids. Groundedness then becomes checkable in code — verify each
-  cited id exists, belongs to that product, and is `quotable` — turning a subjective judgement into
-  a countable number. Nothing currently measures this, and it is the actual product risk the whole
-  quotable/retrieval split exists to manage.
+**3b. Reasoning effort is hardcoded `low` and unexposed.** It was chosen for one-word label
+classification and carried into grounded answering, which is a much harder task, without
+being revisited. Every number recorded is at `low`. Exposing `--effort` and re-running would
+show whether the remaining uncited sentences are a model limitation or a setting.
 
-**Rejected for now: an agentic REPL with tools.** It would test whether a model routes correctly
-between scoped and discovery, useful later, but it adds a second failure mode on top of the one
-being measured and makes every bad answer ambiguous between bad routing and bad retrieval.
-Revisit once A+D has a baseline.
+**3c. `llm.complete` hides which request shape succeeded.** It tries three, and if a model
+rejects `reasoning_effort` the run proceeds silently at that model's default. Two runs are
+then not necessarily comparable and nothing says so — the same silent-degradation pattern as
+the reranker and the Storefront fallback.
 
-**Boundary to keep:** `DESIGN.md` §9 rules out LLM extraction in the ingestion pipeline. A
-playground does not violate that, but it must live in its own module with its own optional
-dependency and never be imported by an ingest stage, so the v0 line stays honest.
+**3d. Re-scoring requires re-calling the model.** The answers are already logged and the
+scorer is pure text analysis, so a `--rescore` flag reading `chat_replay.jsonl` would make
+iterating on the metric free. The §8 figures were recovered that way with a throwaway
+script.
 
-Provider: only `OPENAI_API_KEY` is present and chat-capable. Claude would need a key added.
+**3e. A hedge is scored as an uncited claim.** *"I don't have the tank size in the available
+facts"* states no product fact but is counted against the answer. Four of remi's six
+ungrounded turns are this. The 0.85 is therefore a floor, and the fix is either a
+non-claim detector or an expectation in the question file.
 
-**Routing does not exist and is deliberately absent from retrieval.** In production the product
-identity arrives as structured context from the surface (a product page, or the previous turn),
-not inferred from query text. Resolving "it" from history, and deciding to break scope when a
-scoped query is really a discovery one, belong to the answer layer, which holds the conversation.
-Today the question file declares the mode via its `scope` field.
+**3f. Promote-to-eval was deliberately not built.** Turns are logged with a `question_yaml`
+field already in the right shape, so the remaining work is a command that appends it.
+
+**Still rejected: an agentic REPL with tools.** Routing would add a second failure mode on
+top of the one being measured. Revisit now that A+D has a baseline to compare against.
 
 ---
 
@@ -325,15 +268,16 @@ doing before the reranker decision, since a third store may move recall more tha
 
 ## 8. Repository state
 
-The code work described above is committed as `e74427d` — "feat: update harness with separate
-search paths and tests" — on `main`. That commit carries the full-catalogue crawl, the family
-collapse, retrieval diagnostics, fact ages, the scoped/discovery split, and the two theme-spec
-fixes listed as done in item 1.
+The label-gate work is committed on the `worktree-label-gate` branch: extraction fixes, the
+policy layer, the classifier, the three-arm comparison, and 20 new tests. The chat layer
+(`chat.py`, `llm.py`, two CLI commands, 21 tests) is **uncommitted** in the working tree at
+the time of writing. The suite is 131 tests and still needs no token.
 
-Uncommitted at the time of writing: `README.md`, `docs/DESIGN.md`, `docs/FINDINGS.md` and this
-file, all documentation.
+The documentation described in earlier revisions of this file as uncommitted was committed
+in `93e50fc`; that note was stale and is corrected here.
 
-The Postgres database holds the measured state the numbers above describe, including the crawl of
-152 skout pages. It is a Docker volume, not in the repo — `docker compose up -d db` brings it
-back, but a `docker compose down -v` would destroy it and require a full re-crawl and re-embed to
-reproduce.
+The Postgres database holds the measured state above and is settled on the `static` policy,
+which is now the `merge` default. It is a Docker volume, not in the repo — `docker compose up
+-d db` brings it back, but a `docker compose down -v` would destroy it and require a full
+re-crawl and re-embed to reproduce. `poc init-db` is idempotent and carries the
+`template_constants.handle` migration.

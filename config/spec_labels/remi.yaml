@@ -1,0 +1,46 @@
+# remi: hand-authored reference set for theme spec labels.
+#
+# Authored 2026-08-25 from `poc labels --store remi`. The eight per-product labels were
+# written before any classifier ran; the template-constant labels were added afterwards
+# but before the classifier was shown any of them. This file is both the input to the
+# `static` policy and the ground truth the `llm` policy is scored against, so it must not
+# be edited after seeing model output for a label.
+#
+#   spec       a durable property of the product; may become quotable
+#   widget     storefront control, page title or marketing heading; never stored
+#   uncertain  genuine product content that is not a checkable property; retrieval only
+#
+# These are one reader's judgements on one store. Precision measured against this file is
+# agreement with that judgement, not correctness in general. See docs/FINDINGS.md.
+
+labels:
+  "Automatic": uncertain
+  "Battery life": spec
+  "Compatible with": spec
+  "Custom Night Guard": widget
+  "Deep Cleaning Tablets": uncertain
+  "Emergency Solution": widget
+  "Feature bullets": uncertain
+  "Formula": spec
+  "Guard/Retainer Rush Lab Service": widget
+  "Ingredients": spec
+  "Kill rate": spec
+  "Material": spec
+  "Materials": spec
+  "Night Guard Material": spec
+  "On Remi Club": widget
+  "One Time Only Purchase": widget
+  "Power": spec
+  "Quantity": spec
+  "Removal Tool": spec
+  "Removal Tool Material": spec
+  "Sleep": uncertain
+  "Tank capacity": spec
+  "Tank material": spec
+  "Tank volume": spec
+  "Tray Material": spec
+  "Treatment duration": spec
+  "Two-in-one": uncertain
+  "Use": spec
+  "Vitality": uncertain
+  "White-glove support": uncertain

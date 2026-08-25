@@ -35,6 +35,14 @@ uv run poc init-db
 
 Store settings live in `config/stores.yaml` and contain no secrets.
 
+`config/spec_labels/<slug>.yaml` holds the per-store label reference set: for each label the
+theme renders as a `Label: Value` pair, whether it is a product **spec**, a storefront
+**widget** such as a variant or subscription picker, or **uncertain**. Only `spec` may become
+quotable; `uncertain` is stored as retrieval, findable but never repeated to a shopper as
+fact; `widget` is not stored. The distinction cannot be made globally — skout's `Pack Size`
+is a variant picker and remi's `Quantity` is how many tablets are in the box. See
+`docs/FINDINGS.md` §7.
+
 ---
 
 ## Run it without a token
@@ -52,7 +60,7 @@ That seed is synthetic — five products, no review content — so **its coverag
 not meaningful**. It proves the pipeline runs.
 
 ```bash
-uv run pytest -q          # 90 tests against the real fixtures
+uv run pytest -q          # 131 tests against the real fixtures
 ```
 
 ---
@@ -118,9 +126,56 @@ Every command takes `--store` (which overrides the `enabled` flag) and most take
 | `fetch-api` | admin token | `api.jsonl`, `metafield_definitions.jsonl` |
 | `fetch-html` | `api.jsonl` | `pages/*.html`, `pages/*.md`, `fetch_manifest.jsonl` |
 | `profile` | `api.jsonl` + `pages/` | `profile.json` |
-| `merge` | `api.jsonl` + `profile.json` | Postgres: assertions, edges, constants |
+| `merge` | `api.jsonl` + `profile.json` + `spec_labels/` | Postgres: assertions, edges, constants |
 | `index` | Postgres | Postgres: documents + vectors |
 | `search` / `eval` | Postgres + live API | stdout |
+| `labels` | `profile.json` | stdout: the label inventory to hand-label |
+| `compare-labels` | `profile.json` + OpenAI | stdout: classifier scored against the reference set |
+| `chat` | Postgres + OpenAI | REPL; turns to `data/<slug>/chat_turns.jsonl` |
+| `chat-replay` | Postgres + OpenAI | groundedness over the eval questions |
+
+### Models
+
+| what | setting | default |
+|---|---|---|
+| embeddings | `embedding_model` in `config/stores.yaml` | `text-embedding-3-large`, 1024 dims |
+| reranking | `rerank_model` in `config/stores.yaml` | `rerank-v4.0-fast` — has never run |
+| label classifier | `PIER39_LABEL_MODEL` | `gpt-5.5` |
+| chat and replay | `PIER39_CHAT_MODEL`, or `--model` | `gpt-5.5` |
+
+Reasoning effort is `low` everywhere and is not yet exposed as a flag. No model is called
+during ingestion: `merge` defaults to the deterministic `static` label policy.
+
+### Trying it by hand
+
+```bash
+uv run poc chat --store remi                     # discovery mode
+uv run poc chat --store remi --product water-flosser
+```
+
+Each turn prints the answer, every assertion the model was shown with its id and tier, which
+ids it cited, whether the answer is grounded, and the retrieval diagnostics. In the REPL,
+`/product <handle>` scopes to a product, `/discovery` clears it, `/quit` leaves. Add
+`--no-facts` or `--no-diagnostics` to quieten it, `--model` to compare models.
+
+The model must cite an assertion id for every claim, and each citation is checked in code:
+the id must exist, have been shown, and be `quotable`. Answers carrying no citations are
+reported separately rather than scored, because a correct refusal and an unsupported
+assertion are not distinguishable without knowing the question was answerable.
+
+```bash
+uv run poc chat-replay --store remi --limit 8    # same answer function, batch
+```
+
+Drop `--limit` for the full set; that is 42 model calls on remi.
+
+`merge --label-policy none|static|llm` selects the label gate. `static` is the default and
+reads the reference set. `llm` classifies each distinct label once, caches the verdict in
+`data/<slug>/label_verdicts.json` keyed by model, and is off by default. `gpt-5.5` (the
+default, override with `PIER39_LABEL_MODEL`) reproduced every confident judgement in both
+reference sets; `gpt-4o-mini` did not. It stays off because a reviewed file beats a model
+call for two stores someone has already read. `none` reproduces behaviour before the gate existed
+and exists as a control.
 
 Stages never fetch on each other's behalf. That is what makes `profile` re-runnable
 against saved pages while you tune thresholds.

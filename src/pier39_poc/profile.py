@@ -49,6 +49,7 @@ from .blocks import (
     build_chrome_profile,
     extract_blocks,
     inline_label,
+    is_numeric_value,
     label_for,
     product_region,
     repeated_block_profile,
@@ -56,6 +57,8 @@ from .blocks import (
 )
 from .config import StoreConfig
 from .crawl import template_key
+from .labels import SPEC, load_reference
+from .labels import normalise as normalise_label
 from .matching import (
     FREE_FROM_KEYS,
     PageIndex,
@@ -301,8 +304,18 @@ def build_profile(store: StoreConfig) -> dict[str, Any]:
     admitted = [v for v in verdicts.values() if v.admitted]
     rejected = [v for v in verdicts.values() if not v.admitted]
     allowlist = [v.to_dict() for v in sorted(admitted, key=lambda v: v.full_key)]
+    reference = load_reference(store.slug)
+    affirmed = {
+        c["label"]
+        for blocks in (constants.get("per_product") or {}).values()
+        for c in blocks
+        if c.get("label") and reference.get(normalise_label(c["label"])) == SPEC
+    }
     attributes = build_attributes(
-        allowlist, constants.get("by_template") or {}, _reference_key_counts(products)
+        allowlist,
+        constants.get("by_template") or {},
+        _reference_key_counts(products),
+        affirmed,
     )
 
     payload = {
@@ -613,6 +626,8 @@ def _spec_pairs(region: list[str], eligible: set[str]) -> list[dict[str, Any]]:
         if not found or not found[1]:
             continue
         seen.add(block)
+        if is_numeric_value(block):
+            continue
         if is_commerce_constant(found[0], block):
             continue
         out.append(
@@ -675,6 +690,7 @@ def _residual_analysis(
         groups[template_key(by_handle[handle])].append(handle)
 
     constants: dict[str, list[dict[str, Any]]] = {}
+    per_product: dict[str, list[dict[str, Any]]] = {}
     per_product_theme: dict[str, list[str]] = {}
     for template, template_handles in groups.items():
         if len(template_handles) < 2:
@@ -712,6 +728,19 @@ def _residual_analysis(
         for h in template_handles:
             per_product_theme[h] = sorted(set(residual_blocks.get(h, [])) - shared)
 
+    for handle, region in regions.items():
+        template = template_key(by_handle[handle])
+        already = {
+            (c.get("label"), c.get("value")) for c in constants.get(template, [])
+        }
+        pairs = [
+            pair
+            for pair in _spec_pairs(region, set(region))
+            if pair.get("label") and (pair["label"], pair["value"]) not in already
+        ]
+        if pairs:
+            per_product[handle] = pairs
+
     constant_words = sum(
         len(c["value"].split()) for blocks in constants.values() for c in blocks
     )
@@ -730,6 +759,7 @@ def _residual_analysis(
     return (
         {
             "by_template": constants,
+            "per_product": per_product,
             "per_product_theme_counts": theme_counts,
             "per_product_theme_sample": {
                 h: per_product_theme[h][:20] for h in ranked[:5] if per_product_theme[h]

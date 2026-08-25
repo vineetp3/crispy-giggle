@@ -671,6 +671,38 @@ search. No `read_themes`. No `bulkOperationRunQuery`. No web API surface. No app
 Dockerfile. No quotability decay — it needs the re-confirmation loop that incremental
 re-ingestion would provide.
 
+**Amended 2026-08-25 — LLM label classification is permitted; LLM extraction is not.**
+
+The exclusion above was written against a model *reading a page and producing facts*. That
+stays excluded, and nothing in the ingestion path sends page content to a model.
+
+What is now permitted is narrower: classifying a recovered **label** as a product
+specification or a storefront widget. `labels.ClassifierPolicy` sends one label and up to
+three example values, and receives one word back. It cannot produce a value, only decide
+what an already-extracted label means. Verdicts are cached by `(store, label)` in
+`data/<slug>/label_verdicts.json` and committed, so a classified profile re-runs offline and
+deterministically. The deterministic guards still run afterwards and can reject anything the
+model accepted; no policy can promote past `is_quotable_theme_value` or
+`is_commerce_constant`.
+
+**The measurement depends entirely on the model, which is the finding.** `gpt-4o-mini`
+agreed on 22 of 30 remi labels and 4 of 8 skout labels, read remi's `Quantity` as a widget —
+the single case the label gate was built to fix — and promoted three widgets to
+specifications, reintroducing the quotability breach. `gpt-5.5` reproduced **every** confident
+`spec` or `widget` call in both reference sets, 29 of 29, promoted no widget, and produced
+remi outcomes identical to the shipped configuration. Its only disagreements are on labels
+the reference set itself marks `uncertain`.
+
+`--label-policy llm` remains off by default: a cached deterministic file is cheaper,
+auditable and reviewable, and 38 labels on two stores is not a basis for generalising. The
+result does strengthen the case for classification on a store nobody has read. See
+`docs/FINDINGS.md` §7.
+
+**The chat layer is outside this boundary and stays there.** `chat.py` and `llm.py` make
+model calls, but they are imported by the CLI only and never by an ingest stage, so no
+pipeline stage gains a model dependency. Their purpose is to strengthen the evals by
+measuring groundedness, not to ship an assistant. See `docs/FINDINGS.md` §8.
+
 ---
 
 ## 10. Open items
@@ -748,15 +780,24 @@ What remains open:
       acceptable to repeat to a shopper is a business decision and belongs with whoever owns that
       risk, not in this document.
 
-- [ ] **Theme spec extraction — the label gate.** Facts plainly visible on a product page are not
-      becoming queryable facts. Two causes remain: the not-a-label denylist is global and
-      store-blind (`quantity` is rejected as a cart widget, and on remi's tablets it is a real
-      spec), and per-product theme specs are never stored at all because `merge` writes theme
-      assertions only from template constants. Agreed direction: per-store label allow/deny lists
-      in `config/stores.yaml`, plus storing per-product pairs as `retrieval` by default and
-      promoting only allow-listed labels to `quotable`. An LLM classification pass is under
-      consideration and would reopen the §9 boundary. Full analysis in `docs/PENDING.md` §1.
-      **Current scoped answerability figures are a floor, not a measurement.**
+- [x] **Theme spec extraction — the label gate.** Closed 2026-08-25. Three extraction defects
+      were fixed and a per-store label policy now decides whether a recovered `Label: Value`
+      pair is a product specification or a storefront widget. remi's scoped answerability rose
+      from 0.65 to 0.75 and skout holds 0.87. `Delivery Frequency` and `This item` are no
+      longer quotable on skout; `Pack Size` and `Size` deliberately still are, by a product
+      decision recorded in `docs/PENDING.md` §1a. The LLM classifier was built, measured and left off by default — see §9's amendment
+      and `docs/FINDINGS.md` §7. Two consequences worth carrying forward, both in
+      `docs/PENDING.md`: the reference sets are one reader's judgement on two stores, and
+      whether a variant picker legitimately answers "how many come in a pack" is an unsettled
+      product question rather than a defect.
+
+- [x] **Chat layer.** Built 2026-08-25 as the agreed A+D shape: `poc chat` and
+      `poc chat-replay` over one shared answer function. The model cites assertion ids and
+      every citation is verified in code. remi baseline groundedness 0.85 with **zero
+      invalid citations across 42 turns**, which is the first evidence the quotable and
+      retrieval tiers hold up in front of a model. skout is not yet measured, reasoning
+      effort is hardcoded `low`, and re-scoring still costs model calls. See
+      `docs/PENDING.md` §3 and `docs/FINDINGS.md` §8.
 
 - [ ] Whether a metafield write fires `products/update`. Irrelevant to v0, required before any
       incremental design.
