@@ -328,6 +328,7 @@ def test_negation_question_scoring_is_constraint_based():
         def __init__(self, handle):
             self.handle = handle
             self.rerank_score = None
+            self.siblings = []
 
     class FakeStore:
         slug = "skout"

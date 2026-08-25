@@ -20,6 +20,18 @@ infer the parameter type from without them and the query fails with Indeterminat
 `trust_class` travels on the chunk so a caller can retrieve over everything and ground on
 quotable text only. Ordering by it is not enough -- a mixed string carries no marker.
 
+Duplicate listings are collapsed into one family between the whitelist join and the
+commerce filter -- after negation so a collapse can never resurrect an undeclared product,
+before `top_k` so the slice sees distinct products. See `families.py` for the key.
+
+Degradation is visible, not silent. `_rerank` and `_attach_live` still swallow their
+exceptions, because degrading beats erroring on a shopper query, but both now record what
+failed on a `Diagnostics` the caller can print. This matters most under a price filter:
+`_passes_commerce` rejects any hit with no live read, so a dead credential turns
+`--max-price` into an empty result set that reads as "nothing matches" rather than "the
+price lookup died". A broken COHERE_API_KEY hid behind the same pattern for every run on
+2026-08-25.
+
 Commerce constraints are applied AFTER the live read, not as SQL. Price and stock are never
 stored, so there is no column to filter on -- DESIGN.md 5.5 and 5.6 previously asked for
 both at once. The live read therefore has to happen before the filter and before the
@@ -37,6 +49,7 @@ from typing import Any
 from . import db
 from .config import StoreConfig, load_stores, storefront_token_for, token_for
 from .embeddings import Embedder
+from .families import collapse
 from .matching import FREE_FROM_FIELD
 
 RRF_K = 60
@@ -45,10 +58,24 @@ LIVE_READ_LIMIT = 60
 
 
 @dataclass
+class Diagnostics:
+    live_read_failed: bool = False
+    live_read_error: str | None = None
+    rerank_requested: bool = False
+    rerank_failed: bool = False
+    rerank_error: str | None = None
+
+    @property
+    def degraded(self) -> bool:
+        return self.live_read_failed or self.rerank_failed
+
+
+@dataclass
 class Hit:
     product_id: int
     handle: str
     title: str
+    vendor: str | None
     store_slug: str
     online_store_url: str | None
     chunk_key: str
@@ -59,6 +86,7 @@ class Hit:
     rrf: float = 0.0
     rerank_score: float | None = None
     matched_fields: list[dict[str, Any]] = field(default_factory=list)
+    siblings: list[str] = field(default_factory=list)
     live: dict[str, Any] | None = None
 
     @property
@@ -76,7 +104,7 @@ def vector_literal(vector: list[float]) -> str:
 
 _SELECT = """
     SELECT d.product_id, d.chunk_key, d.trust_class, d.text, p.handle, p.title,
-           p.online_store_url, s.slug
+           p.vendor, p.online_store_url, s.slug
     FROM documents d
     JOIN products p ON p.id = d.product_id
     JOIN stores s ON s.id = p.store_id
@@ -133,6 +161,7 @@ def _hit_from_row(row: dict[str, Any], **ranks: int) -> Hit:
         product_id=row["product_id"],
         handle=row["handle"],
         title=row["title"],
+        vendor=row["vendor"],
         store_slug=row["slug"],
         online_store_url=row["online_store_url"],
         chunk_key=row["chunk_key"],
@@ -152,7 +181,10 @@ def search(
     live_prices: bool = True,
     max_price: float | None = None,
     in_stock_only: bool = False,
+    group_families: bool = True,
+    diagnostics: Diagnostics | None = None,
 ) -> list[Hit]:
+    diag = diagnostics if diagnostics is not None else Diagnostics()
     embedder = Embedder(store.embedding_model, store.embedding_dimensions)
     query_vector = embedder.embed_one(query)
 
@@ -180,35 +212,116 @@ def search(
             )
             ranked = [h for h in ranked if h.product_id in allowed]
 
+        if group_families and ranked:
+            ranked = collapse(ranked, _quotable_counts(conn, ranked))
+
         filtering = max_price is not None or in_stock_only
         if filtering and ranked:
             ranked = ranked[:LIVE_READ_LIMIT]
-            _attach_live(conn, ranked)
+            attach_live(conn, ranked, diag)
             ranked = [h for h in ranked if _passes_commerce(h, max_price, in_stock_only)]
 
         if rerank and ranked:
-            ranked = _rerank(query, ranked, store.rerank_model)
+            diag.rerank_requested = True
+            ranked = _rerank(query, ranked, store.rerank_model, diag)
 
         ranked = ranked[:top_k]
 
         if live_prices and ranked and not filtering:
-            _attach_live(conn, ranked)
+            attach_live(conn, ranked, diag)
 
         for hit in ranked:
-            rows = conn.execute(
-                """
-                SELECT field, label, value, source, source_kind, trust_class,
-                       rendered, source_updated_at
-                FROM field_assertions
-                WHERE product_id = %s
-                ORDER BY (trust_class = 'quotable') DESC, field
-                LIMIT 12
-                """,
-                (hit.product_id,),
-            ).fetchall()
-            hit.matched_fields = [dict(r) for r in rows]
+            hit.matched_fields = assertions_for(conn, [hit.product_id], limit=12)
 
     return ranked
+
+
+@dataclass
+class FreeFromOutcome:
+    term: str
+    has_declaration: bool
+    declared_free: bool
+
+    @property
+    def answerable(self) -> bool:
+        return self.has_declaration
+
+
+def assertions_for(
+    conn, product_ids: list[int], limit: int | None = None
+) -> list[dict[str, Any]]:
+    if not product_ids:
+        return []
+    rows = conn.execute(
+        """
+        SELECT field, label, value, source, source_kind, trust_class,
+               rendered, source_updated_at
+        FROM field_assertions
+        WHERE product_id = ANY(%s)
+        ORDER BY (trust_class = 'quotable') DESC, field
+        """,
+        (sorted(set(product_ids)),),
+    ).fetchall()
+
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = (row["field"], row["value"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(row))
+        if limit is not None and len(out) >= limit:
+            break
+    return out
+
+
+def free_from_outcomes(
+    conn, product_ids: list[int], terms: list[str]
+) -> list[FreeFromOutcome]:
+    wanted = [t.strip().lower() for t in terms if t.strip()]
+    if not product_ids or not wanted:
+        return []
+
+    has_any = bool(
+        conn.execute(
+            """
+            SELECT 1 FROM field_assertions
+            WHERE product_id = ANY(%s) AND field = %s
+            LIMIT 1
+            """,
+            (sorted(set(product_ids)), FREE_FROM_FIELD),
+        ).fetchone()
+    )
+
+    out: list[FreeFromOutcome] = []
+    for term in wanted:
+        free = bool(declared_free_from(conn, product_ids, [term])) if has_any else False
+        out.append(FreeFromOutcome(term=term, has_declaration=has_any, declared_free=free))
+    return out
+
+
+def _brief(exc: Exception) -> str:
+    text = " ".join(str(exc).split())
+    if len(text) > 160:
+        text = text[:157] + "..."
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _quotable_counts(conn, hits: list[Hit]) -> dict[int, int]:
+    ids = sorted({h.product_id for h in hits})
+    if not ids:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT product_id, count(*) AS n
+        FROM field_assertions
+        WHERE product_id = ANY(%s) AND trust_class = 'quotable'
+        GROUP BY product_id
+        """,
+        (ids,),
+    ).fetchall()
+    return {int(r["product_id"]): int(r["n"]) for r in rows}
 
 
 def _passes_commerce(hit: Hit, max_price: float | None, in_stock_only: bool) -> bool:
@@ -224,7 +337,9 @@ def _passes_commerce(hit: Hit, max_price: float | None, in_stock_only: bool) -> 
     return True
 
 
-def _rerank(query: str, hits: list[Hit], model: str) -> list[Hit]:
+def _rerank(
+    query: str, hits: list[Hit], model: str, diag: Diagnostics | None = None
+) -> list[Hit]:
     try:
         import cohere
 
@@ -241,11 +356,14 @@ def _rerank(query: str, hits: list[Hit], model: str) -> list[Hit]:
             hit.rerank_score = float(result.relevance_score)
             ordered.append(hit)
         return ordered
-    except Exception:
+    except Exception as exc:
+        if diag is not None:
+            diag.rerank_failed = True
+            diag.rerank_error = _brief(exc)
         return hits
 
 
-def _attach_live(conn, hits: list[Hit]) -> None:
+def attach_live(conn, hits: list[Hit], diag: Diagnostics | None = None) -> None:
     from .shopify_api import AdminClient, StorefrontClient
 
     configs = {s.slug: s for s in load_stores()}
@@ -281,7 +399,10 @@ def _attach_live(conn, hits: list[Hit]) -> None:
                 with AdminClient(target, token_for(slug)) as client:
                     for start in range(0, len(gids), 50):
                         live.update(client.fetch_live_variants(gids[start : start + 50]))
-        except Exception:
+        except Exception as exc:
+            if diag is not None:
+                diag.live_read_failed = True
+                diag.live_read_error = _brief(exc)
             continue
 
         by_product: dict[int, list[dict[str, Any]]] = {}

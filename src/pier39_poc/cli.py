@@ -17,7 +17,7 @@ from . import profile as profile_stage
 from . import report as report_stage
 from .artifacts import record_stage, write_jsonl
 from .config import ConfigError, StoreConfig, load_env, load_stores, token_for
-from .crawl import fetch_pages, select_pages
+from .crawl import GROUP_FLOOR, fetch_pages, floor_shortfall, select_pages
 from .shopify_api import PRODUCTS_QUERY, AdminClient, ShopifyError
 
 app = typer.Typer(add_completion=False, help="Shopify catalogue ingestion feasibility POC")
@@ -139,6 +139,15 @@ def fetch_html(
 
     for cfg in _stores(store):
         products = load_products(cfg)
+        shortfall = floor_shortfall(cfg, products)
+        if shortfall:
+            budget, reachable = shortfall
+            console.print(
+                f"  [yellow]profile_pages={budget} cannot reach the {GROUP_FLOOR}-page "
+                f"floor for every template group; {reachable} pages would be needed, so "
+                f"groups get 1-2 pages and differencing degrades. See DESIGN.md 5.2."
+                "[/yellow]"
+            )
         targets = select_pages(cfg, products)
         if limit:
             targets = targets[:limit]
@@ -211,19 +220,25 @@ def search_cmd(
         None, "--max-price", help="applied to live price, not a stored column"
     ),
     in_stock: bool = typer.Option(False, "--in-stock", help="live availability only"),
+    no_group: bool = typer.Option(
+        False, "--no-group", help="do not collapse duplicate listings of one product"
+    ),
 ) -> None:
-    from .search import search
+    from .search import Diagnostics, search
 
     stores = _stores(store)
     cfg = stores[0]
     slug = cfg.slug if store else None
     terms = [t.strip() for t in (exclude or "").split(",") if t.strip()]
 
+    diag = Diagnostics()
     hits = search(
         query, cfg, slug=slug, top_k=top_k, exclude_terms=terms,
         rerank=not no_rerank, live_prices=not no_live,
         max_price=max_price, in_stock_only=in_stock,
+        group_families=not no_group, diagnostics=diag,
     )
+    _print_diagnostics(diag, filtered=max_price is not None or in_stock)
     if not hits:
         console.print("[yellow]no results[/yellow]")
         return
@@ -241,13 +256,103 @@ def search_cmd(
                 f"   [green]live[/green]: {hit.live['available']}/{hit.live['variants']} "
                 f"available, price {hit.live['min_price']}-{hit.live['max_price']}"
             )
+        if hit.siblings:
+            console.print(f"   [dim]also listed as: {', '.join(hit.siblings)}[/dim]")
         for row in hit.matched_fields[:6]:
             mark = "Q" if row["trust_class"] == "quotable" else "r"
             label = row.get("label") or row["field"]
-            console.print(f"   [{mark}] {label}: {str(row['value'])[:110]}")
+            console.print(
+                f"   [{mark}] {label}: {str(row['value'])[:110]}{_as_of(row)}"
+            )
         if hit.online_store_url:
             console.print(f"   [blue]{hit.online_store_url}[/blue]")
         console.print()
+
+
+def _as_of(row: dict) -> str:
+    stamp = row.get("source_updated_at")
+    if stamp is None or row.get("trust_class") != "quotable":
+        return ""
+    return f"  [dim](as of {stamp.date().isoformat()})[/dim]"
+
+
+def _print_diagnostics(diag, filtered: bool) -> None:
+    if diag.live_read_failed:
+        console.print(
+            f"[red]the live price and stock read failed[/red] -- {diag.live_read_error}."
+        )
+        if filtered:
+            console.print(
+                "[red]  --max-price and --in-stock reject any product whose price could "
+                "not be confirmed, so an empty result here means the lookup died, not "
+                "that nothing matched.[/red]"
+            )
+    if diag.rerank_failed:
+        console.print(
+            f"[red]the reranker did not run[/red] -- {diag.rerank_error}. Results are "
+            "the fused order only."
+        )
+
+
+@app.command("facts")
+def facts_cmd(
+    handle: str = typer.Argument(..., help="product handle; scope expands to its family"),
+    store: Optional[str] = typer.Option(None, "--store"),
+    exclude: Optional[str] = typer.Option(None, "--exclude", help="comma-separated terms"),
+    no_live: bool = typer.Option(False, "--no-live"),
+    attribute: Optional[str] = typer.Option(None, "--attribute", help="check one attribute"),
+) -> None:
+    from .answering import ProductNotFound, answer_for_product
+    from .attributes import ATTRIBUTES
+    from .search import Diagnostics
+
+    cfg = _stores(store)[0]
+    terms = [t.strip() for t in (exclude or "").split(",") if t.strip()]
+    diag = Diagnostics()
+    try:
+        answer = answer_for_product(
+            cfg, handle, exclude_terms=terms, live=not no_live, diagnostics=diag
+        )
+    except ProductNotFound as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    _print_diagnostics(diag, filtered=False)
+    console.print(f"[bold]{answer.title}[/bold]  [dim]{answer.store_slug}/{answer.handle}[/dim]")
+    if answer.family:
+        console.print(f"   [dim]also listed as: {', '.join(answer.family)}[/dim]")
+    if answer.live:
+        console.print(
+            f"   [green]live[/green]: {answer.live['available']}/{answer.live['variants']} "
+            f"available, price {answer.live['min_price']}-{answer.live['max_price']}"
+        )
+
+    for outcome in answer.free_from:
+        if not outcome.has_declaration:
+            console.print(
+                f"   [yellow]{outcome.term}: NO free-from declaration on this product -- "
+                f"unknown, not 'free of it'[/yellow]"
+            )
+        elif outcome.declared_free:
+            console.print(f"   [green]{outcome.term}: declared free of it[/green]")
+        else:
+            console.print(f"   [red]{outcome.term}: declares free-from, and does NOT list it[/red]")
+
+    names = [attribute] if attribute else list(ATTRIBUTES)
+    console.print()
+    for name in names:
+        rows = answer.answers(name)
+        mark = "[green]YES[/green]" if rows else "[dim]no [/dim]"
+        detail = "; ".join(
+            f"{r.get('label') or r['field']}: {str(r['value'])[:48]}" for r in rows[:2]
+        )
+        console.print(f"   {mark} {name:15} {detail}")
+
+    console.print(
+        f"\n   [dim]{len(answer.quotable)} quotable / {len(answer.retrieval)} retrieval "
+        f"assertions across {len(answer.family) + 1} listing(s), "
+        f"{len(answer.documents)} document(s)[/dim]"
+    )
 
 
 @app.command("report")

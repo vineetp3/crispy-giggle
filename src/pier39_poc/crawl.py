@@ -73,6 +73,32 @@ def select_pages(store: StoreConfig, products: list[dict[str, Any]]) -> list[dic
 GROUP_FLOOR = 3
 
 
+def floor_shortfall(
+    store: StoreConfig, products: list[dict[str, Any]]
+) -> tuple[int, int] | None:
+    if store.crawl_scope != "sample" or store.sampling not in (
+        "by_template",
+        "by_product_type",
+    ):
+        return None
+
+    pool = selectable(products)
+    if not pool:
+        return None
+
+    if store.sampling == "by_product_type":
+        def key_of(p: dict[str, Any]) -> str:
+            return (p.get("product_type") or "").strip().lower() or "_default"
+    else:
+        key_of = template_key
+
+    reachable = min(len(pool), len({key_of(p) for p in pool}) * GROUP_FLOOR)
+    budget = min(store.profile_pages, store.max_pages)
+    if budget >= reachable:
+        return None
+    return budget, reachable
+
+
 def _sample(
     store: StoreConfig, pool: list[dict[str, Any]], budget: int
 ) -> list[dict[str, Any]]:

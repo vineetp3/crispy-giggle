@@ -48,8 +48,10 @@ from .blocks import (
     ChromeProfile,
     build_chrome_profile,
     extract_blocks,
+    inline_label,
     label_for,
     product_region,
+    repeated_block_profile,
     visible_text,
 )
 from .config import StoreConfig
@@ -114,6 +116,27 @@ def is_content_free(mf_type: str, values: list[str]) -> bool:
     if mf_type.removeprefix("list.") in CONTENT_FREE_TYPES:
         return True
     return bool(values) and all(_CONTENT_FREE_RE.match(v) for v in values)
+
+
+_PROMO_LABEL_RE = re.compile(r"\b(sale|save|savings|deal|coupon|offer|bundle price)\b", re.IGNORECASE)
+_PROMO_VALUE_RE = re.compile(
+    r"(\d+\s*%\s*off|\bup to\s+\d+\s*%|[$£€]\s*\d|\bfree shipping\b)", re.IGNORECASE
+)
+
+
+def is_commerce_constant(label: str | None, value: str) -> bool:
+    """Theme-resident promos must not become quotable facts.
+
+    `is_commerce_fact` guards the metafield path on namespace, key and type, none of which a
+    theme constant has. remi renders `Birthday Sale: 50% Off` as a spec pair on 22 products;
+    it is a time-limited promotion, not a property of the product. A bare percentage is not
+    enough to decide -- `Formula: 3.8% Hydrogen Peroxide` is a real concentration -- so this
+    keys on discount language rather than on the presence of a number.
+    """
+    text = (label or "").strip()
+    if _COMMERCE_KEY_RE.search(text) or _PROMO_LABEL_RE.search(text):
+        return True
+    return bool(_PROMO_VALUE_RE.search(value or ""))
 
 
 def is_commerce_fact(namespace: str, key: str, mf_type: str, values: list[str]) -> bool:
@@ -249,22 +272,31 @@ def build_profile(store: StoreConfig) -> dict[str, Any]:
     page_blocks = _page_blocks(store, handles, store.min_block_chars)
     page_index = _page_indexes(store, handles)
 
-    chrome, group_chrome = _two_level_chrome(store, page_blocks, by_handle)
+    chrome, group_chrome, cross_page = _two_level_chrome(store, page_blocks, by_handle)
 
     regions: dict[str, list[str]] = {}
+    pre_group: dict[str, list[str]] = {}
+    group_shared: dict[str, list[str]] = {}
     for handle, blocks in page_blocks.items():
         foreign = frozenset(t for h, t in titles_by_handle.items() if h != handle and t)
         local = group_chrome.get(template_key(by_handle[handle]))
         stripped = product_region(blocks, chrome, foreign_titles=foreign)
+        pre_group[handle] = stripped
         if local is not None:
-            stripped = product_region(stripped, local, foreign_titles=frozenset())
+            kept = product_region(stripped, local, foreign_titles=frozenset())
+            group_shared[handle] = [b for b in stripped if b in local.chrome]
+            stripped = kept
+        else:
+            stripped = product_region(stripped, cross_page, foreign_titles=frozenset())
         regions[handle] = stripped
 
     verdicts = _derive_allowlist(
         store, products, page_index, regions, known_handles, known_ids
     )
 
-    constants, coverage = _residual_analysis(store, by_handle, regions, verdicts)
+    constants, coverage = _residual_analysis(
+        store, by_handle, regions, verdicts, pre_group, group_shared
+    )
 
     admitted = [v for v in verdicts.values() if v.admitted]
     rejected = [v for v in verdicts.values() if not v.admitted]
@@ -318,7 +350,7 @@ def _two_level_chrome(
     store: StoreConfig,
     page_blocks: dict[str, list[str]],
     by_handle: dict[str, dict[str, Any]],
-) -> tuple[ChromeProfile, dict[str, ChromeProfile]]:
+) -> tuple[ChromeProfile, dict[str, ChromeProfile], ChromeProfile]:
     store_wide = build_chrome_profile(page_blocks, threshold=store.chrome_threshold)
 
     groups: dict[str, dict[str, list[str]]] = defaultdict(dict)
@@ -330,7 +362,7 @@ def _two_level_chrome(
         if len(pages) < 2:
             continue
         per_group[key] = build_chrome_profile(pages, threshold=store.chrome_threshold)
-    return store_wide, per_group
+    return store_wide, per_group, repeated_block_profile(store_wide)
 
 
 def _derive_allowlist(
@@ -559,12 +591,38 @@ def _spec_pairs(region: list[str], eligible: set[str]) -> list[dict[str, Any]]:
             continue
         if len(block.split()) > SPEC_VALUE_MAX_TOKENS:
             continue
+
+        inline = inline_label(block)
+        if inline:
+            if is_commerce_constant(inline[0], inline[1]):
+                seen.add(block)
+                continue
+            seen.add(block)
+            out.append(
+                {
+                    "block": block,
+                    "value": inline[1],
+                    "label": inline[0],
+                    "support": 1,
+                    "single_page": True,
+                }
+            )
+            continue
+
         found = label_for(region, i)
         if not found or not found[1]:
             continue
         seen.add(block)
+        if is_commerce_constant(found[0], block):
+            continue
         out.append(
-            {"value": block, "label": found[0], "support": 1, "single_page": True}
+            {
+                "block": block,
+                "value": block,
+                "label": found[0],
+                "support": 1,
+                "single_page": True,
+            }
         )
     return out
 
@@ -574,7 +632,11 @@ def _residual_analysis(
     by_handle: dict[str, dict[str, Any]],
     regions: dict[str, list[str]],
     verdicts: dict[tuple[str, str], KeyVerdict],
+    pre_group: dict[str, list[str]] | None = None,
+    group_shared: dict[str, list[str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    pre_group = pre_group or {}
+    group_shared = group_shared or {}
     explained_index: dict[str, PageIndex] = {}
     for handle, product in by_handle.items():
         if handle not in regions:
@@ -621,25 +683,31 @@ def _residual_analysis(
             pairs = _spec_pairs(regions[handle], set(residual))
             if pairs:
                 constants[template] = pairs
-            claimed = {p["value"] for p in pairs}
+            claimed = {p["block"] for p in pairs}
             per_product_theme[handle] = sorted(set(residual) - claimed)
             continue
         sets = [set(residual_blocks.get(h, [])) for h in template_handles]
         shared = set.intersection(*sets) if sets else set()
-        labelled = {
-            p["value"]: p["label"]
-            for h in template_handles
-            for p in _spec_pairs(regions[h], shared)
-        }
+
+        stripped_by_group: set[str] = set()
+        for h in template_handles:
+            stripped_by_group |= set(group_shared.get(h, []))
+
+        recovered: dict[str, dict[str, Any]] = {}
+        for h in template_handles:
+            source = pre_group.get(h) or regions.get(h, [])
+            for pair in _spec_pairs(source, shared | stripped_by_group):
+                recovered.setdefault(pair["block"], pair)
+
         constants[template] = [
             {
-                "value": b,
-                "label": labelled.get(b),
+                "value": recovered[b]["value"] if b in recovered else b,
+                "label": recovered[b]["label"] if b in recovered else None,
                 "support": len(template_handles),
                 "single_page": False,
             }
-            for b in sorted(shared)
-            if len(b.split()) >= 3
+            for b in sorted(shared | set(recovered))
+            if b in recovered or len(b.split()) >= 3
         ]
         for h in template_handles:
             per_product_theme[h] = sorted(set(residual_blocks.get(h, [])) - shared)

@@ -261,6 +261,59 @@ def render(store: StoreConfig) -> None:
                 + " / ".join(b[:60] for b in blocks[:3])
             )
 
+    ages = _quotable_age_table(store)
+    if ages is not None:
+        console.print(ages)
+        console.print(
+            "[yellow]nothing expires. An age cliff would empty the quotable set rather "
+            "than make it safer -- see DESIGN.md 10. Age does not separate stale from "
+            "stable-and-correct; only re-confirmation does.[/yellow]"
+        )
+
+
+def _quotable_age_table(store: StoreConfig) -> Table | None:
+    from . import db
+
+    try:
+        with db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT fa.field,
+                       count(*) AS n,
+                       min(fa.source_updated_at) AS oldest,
+                       max(fa.source_updated_at) AS newest
+                FROM field_assertions fa
+                JOIN products p ON p.id = fa.product_id
+                JOIN stores s ON s.id = p.store_id
+                WHERE s.slug = %s
+                  AND fa.trust_class = 'quotable'
+                  AND fa.source_updated_at IS NOT NULL
+                GROUP BY fa.field
+                ORDER BY min(fa.source_updated_at)
+                LIMIT 15
+                """,
+                (store.slug,),
+            ).fetchall()
+    except Exception:
+        return None
+
+    if not rows:
+        return None
+
+    table = Table(title="age of quotable material -- how old is the oldest fact we would state")
+    table.add_column("field", overflow="fold")
+    table.add_column("n", justify="right")
+    table.add_column("oldest")
+    table.add_column("newest")
+    for row in rows:
+        table.add_row(
+            row["field"],
+            str(row["n"]),
+            row["oldest"].date().isoformat(),
+            row["newest"].date().isoformat(),
+        )
+    return table
+
 
 def summary_line(store: StoreConfig) -> str:
     try:

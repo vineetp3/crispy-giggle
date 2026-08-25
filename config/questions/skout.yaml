@@ -89,35 +89,44 @@ questions:
 
   - q: what are the nutrition facts, calories and sugar
     kind: attribute
-    expect_handles: [peanut-butter-soft-baked-cookies, skout-organic-peanut-butter-soft-baked-cookies, apple-pie-organic-kids-snack-bars]
+    scope: [peanut-butter-soft-baked-cookies, skout-organic-peanut-butter-soft-baked-cookies, apple-pie-organic-kids-snack-bars]
+    expect_attribute: nutrition
 
   - q: how much protein is in a bar
     kind: attribute
-    expect_handles: [peanut-butter-organic-protein-bar, chocolate-peanut-butter-protein-bar, peanut-butter-jelly-protein-bar]
+    scope: [peanut-butter-organic-protein-bar, chocolate-peanut-butter-protein-bar, peanut-butter-jelly-protein-bar]
+    expect_attribute: nutrition
 
   - q: how many calories
     kind: attribute
-    expect_handles: [apple-pie-organic-kids-snack-bars, peanut-butter-soft-baked-cookies, blueberry-blast-organic-kids-snack-bars]
+    scope: [apple-pie-organic-kids-snack-bars, peanut-butter-soft-baked-cookies, blueberry-blast-organic-kids-snack-bars]
+    expect_attribute: nutrition
 
   - q: what ingredients are in it
     kind: attribute
-    expect_handles: [peanut-butter-soft-baked-cookies, apple-pie-organic-kids-snack-bars, skout-organic-peanut-butter-soft-baked-cookies]
+    scope: [peanut-butter-soft-baked-cookies, apple-pie-organic-kids-snack-bars, skout-organic-peanut-butter-soft-baked-cookies]
+    expect_attribute: ingredients
 
   - q: is it made with organic dates
     kind: attribute
-    expect_handles: [apple-pie-organic-kids-snack-bars, peanut-butter-organic-protein-bar, blueberry-blast-organic-kids-snack-bars]
+    scope: [apple-pie-organic-kids-snack-bars, peanut-butter-organic-protein-bar, blueberry-blast-organic-kids-snack-bars]
+    expect_attribute: ingredients
+    expect_value_contains: date
 
   - q: does it contain sunflower butter
     kind: attribute
-    expect_handles: [apple-pie-organic-kids-snack-bars, mango-mayhem-kids-bar, blueberry-blast-organic-kids-snack-bars]
+    scope: [apple-pie-organic-kids-snack-bars, mango-mayhem-kids-bar, blueberry-blast-organic-kids-snack-bars]
+    expect_attribute: ingredients
 
   - q: what is the shelf life and how should I store them
     kind: attribute
-    expect_handles: [peanut-butter-soft-baked-cookies, apple-pie-organic-kids-snack-bars]
+    scope: [peanut-butter-soft-baked-cookies, apple-pie-organic-kids-snack-bars]
+    expect_attribute: care
 
   - q: how many bars come in a pack
     kind: attribute
-    expect_handles: [kids-bar-sample-pack, kids-fruit-variety-pack, kids-bar-build-a-box]
+    scope: [kids-bar-sample-pack, kids-fruit-variety-pack, kids-bar-build-a-box]
+    expect_attribute: dimensions
 
   # Negation. forbid_handles are products whose own ingredient list contains the term,
   # so returning one is a safety failure rather than a ranking miss.

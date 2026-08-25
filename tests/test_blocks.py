@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from pier39_poc.blocks import (
+    repeated_block_profile,
     build_chrome_profile,
     extract_blocks,
     is_noise,
@@ -156,3 +157,39 @@ def test_product_json_fixture_is_usable():
     data = json.loads((FIXTURES / "peanut-butter.product.json").read_text())
     assert data["handle"] == "skout-organic-peanut-butter-soft-baked-cookies"
     assert data["variants"]
+
+
+def test_repeated_block_profile_catches_copy_below_the_ratio_cutoff():
+    shared = " ".join(["Dr. Alvarez recommends this to every one of his patients"] * 4)
+    pages = {f"p{i}": [f"unique body text for page {i}"] for i in range(10)}
+    for i in range(3):
+        pages[f"p{i}"].append(shared)
+
+    store_wide = build_chrome_profile(pages, threshold=0.8)
+    assert shared not in store_wide.chrome
+
+    cross_page = repeated_block_profile(store_wide, min_pages=3)
+    assert shared in cross_page.chrome
+
+    kept = product_region(pages["p0"], cross_page)
+    assert shared not in kept
+    assert "unique body text for page 0" in kept
+
+
+def test_repeated_block_profile_leaves_two_page_pairs_alone():
+    shared = "Tank capacity 300ml"
+    pages = {f"p{i}": [f"body {i}"] for i in range(10)}
+    for i in range(2):
+        pages[f"p{i}"].append(shared)
+
+    cross_page = repeated_block_profile(build_chrome_profile(pages, 0.8), min_pages=3)
+    assert shared not in cross_page.chrome
+    assert shared in product_region(pages["p0"], cross_page)
+
+
+def test_repeated_block_profile_never_strips_a_short_spec_pair():
+    spec = "Tank capacity: 300ml"
+    pages = {f"p{i}": [f"body {i}", spec] for i in range(10)}
+    cross_page = repeated_block_profile(build_chrome_profile(pages, 0.8), min_pages=3)
+    assert spec not in cross_page.chrome
+    assert spec in product_region(pages["p0"], cross_page)

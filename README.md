@@ -4,9 +4,11 @@ Feasibility POC for the product-discovery chatbot's catalogue ingestion: pull Sh
 metafields and rendered storefront HTML, work out where each publisher's product content
 actually lives, load it into Postgres with provenance, and query it.
 
-**Read `DESIGN.md` first.** It is the build specification and the decisions register.
+**Read `docs/DESIGN.md` first.** It is the build specification and the decisions register.
+`docs/FINDINGS.md` records what the live runs measured.
 
-The deliverable is `poc report` — the per-store profile. `poc search` exists to validate it.
+The deliverable is `poc report` — the per-store profile, headed by which attributes each store
+can answer and from which source. `poc search` exists to validate it.
 
 ---
 
@@ -24,7 +26,11 @@ uv run poc init-db
 - `PIER39_SHOPIFY_TOKENS` — one JSON blob keyed by store slug, e.g.
   `{"skout":"shpat_...","remi":"shpat_..."}`. Needs `read_products`.
 - `OPENAI_API_KEY` — embeddings (`text-embedding-3-large`, 1024 dims).
-- `COHERE_API_KEY` — reranking. Optional; search degrades to the fused order without it.
+- `COHERE_API_KEY` — reranking. Optional; search degrades to the fused order without it, and
+  that degradation is silent. `poc eval --compare-rerank` reports when the reranker did not run.
+- `PIER39_SHOPIFY_STOREFRONT_TOKENS` — optional, same JSON-blob shape. Used for the answer-time
+  price and stock read. Without it that read falls back to the Admin API, which has no market
+  context and shares the ingestion rate-limit bucket.
 
 Store settings live in `config/stores.yaml` and contain no secrets.
 
@@ -45,7 +51,7 @@ That seed is synthetic — five products, no review content — so **its coverag
 not meaningful**. It proves the pipeline runs.
 
 ```bash
-uv run pytest -q          # 42 tests against the real fixtures
+uv run pytest -q          # 90 tests against the real fixtures
 ```
 
 ---
@@ -70,7 +76,34 @@ Then try it:
 ```bash
 uv run poc search "cookies without peanuts" --store skout --exclude peanut
 uv run poc search "how long does the battery last" --store remi
+uv run poc search "protein bar" --store skout --max-price 30 --in-stock
+uv run poc search "protein bar" --store skout --no-group
+uv run poc eval --store skout --compare-rerank
 ```
+
+Retrieval has two paths, because they are different questions:
+
+```bash
+uv run poc search "a fruity snack bar for a toddler" --store skout   # discovery
+uv run poc facts water-flosser --store remi                          # product already known
+uv run poc facts peanut-butter-protein-bar --store skout --exclude peanut
+```
+
+`search` ranks the catalogue. `facts` takes a product you already have — from a product page, or
+the previous turn — expands it to its family, and returns what is quotable about it. It embeds
+nothing and makes no model call. For allergens it answers in three states, never an empty list:
+declared free of it, declares and does not list it, or **no declaration at all** — the last must
+never be reported as "free of it".
+
+`--exclude` is a whitelist join, not an exclusion scan: a product with no free-from declaration
+is not an answer to a negation query. `--max-price` and `--in-stock` filter on the live read,
+because price and stock are never stored — and they reject anything whose price could not be
+confirmed, so an empty result may mean the lookup failed. Search says so when that happens.
+
+Duplicate listings of one product are collapsed into a single result with its other listings
+shown beneath it, so five slots hold five products rather than five spellings of one bar.
+`--no-group` turns that off. Quotable facts are printed with the date their source was last
+updated.
 
 Every command takes `--store` (which overrides the `enabled` flag) and most take
 `--limit`. `uv run poc stores` prints the resolved config.
@@ -113,31 +146,33 @@ already holds everything.
 
 ## Two things the schema deliberately does not store
 
-**Price and inventory.** There are no such columns. They are read live at query time via
-`search`, because remi carries six stale copies of its own price in metafields, one of
-them labelled a saving while equal to the full price.
+**Price and inventory.** There are no such columns, and prices held in *metafields* are
+rejected too. remi carries six stale copies of its own price across six keys, plus one
+labelled a saving while equal to full price. One derived read is permitted at ingestion —
+a sellability verdict per product, from `availableForSale` and `price`. The verdict is
+stored; neither input is. It exists because 31 of skout's 184 published products are
+abandoned records priced 0.00.
 
-**Anything unvetted as quotable.** Every assertion is `quotable` or `retrieval`.
-Retrieval material feeds the embedding and matching but must never be quoted to a
-shopper. Unrendered LLM-generated enrichment lands in `retrieval` only.
+**Anything unvetted as quotable.** Every assertion is `quotable` or `retrieval`, and each
+product gets a separate document per class so the distinction survives into whatever an
+answer layer reads. Quotability is decided by type and shape, not by whether the value
+renders: the page is rendered *from* the metafield, so a match proves the theme consumed
+the key and nothing about whether a merchant vetted it.
 
 ---
 
 ## Status
 
-Verified without a token, against real fixtures:
+All eight criteria in `docs/DESIGN.md` §2 pass against live runs on both stores. Measured
+results, per-store profiles and data-quality findings are in `docs/FINDINGS.md`.
 
-- block differencing, with the measured thresholds (`tests/test_blocks.py`)
-- value normalisation, token-subset matching, contamination detection (`tests/test_matching.py`)
-- the whole `profile` stage, covering DESIGN.md criteria 3 and 4 (`tests/test_profile.py`)
+Two things have never executed, and every number should be read with them in mind:
 
-Not yet verified — needs a token, or a real run:
+- **the reranker** — `COHERE_API_KEY` is a placeholder, so all recall figures are RRF only.
+  Whether a reranker belongs in v0 at all is still open
+- **the Storefront read** — no storefront token, so live reads used the Admin fallback
 
-- `fetch-api` against a live shop, including whether `Product.templateSuffix` exists
-- `fetch-html` escalation against remi's Cloudflare interstitial
-- criterion 5, label recovery: no labels were recovered from the skout seed. remi is the
-  store with `Material:` / `Battery life:` labels, so this needs remi's pages
-- whether OpenAI returns unit-normalised vectors (`index` measures and logs it)
-- `merge`, `index`, `search`, `eval` end to end against Postgres
+Both now report their own failure instead of degrading in silence.
 
-See `DESIGN.md` section 12 for the open items.
+See `docs/DESIGN.md` §10 for the open items, and its "Closed since the 2026-08-25 runs" list for
+what has been resolved.

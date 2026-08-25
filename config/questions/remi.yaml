@@ -19,27 +19,34 @@ questions:
 
   - q: how long does the battery last
     kind: attribute
-    expect_handles: [water-flosser]
+    scope: [water-flosser]
+    expect_attribute: power
 
   - q: what material is it made of
     kind: attribute
-    expect_handles: [water-flosser, custom-night-guard, custom-mouth-night-guards]
+    scope: [water-flosser, custom-night-guard, custom-mouth-night-guards]
+    expect_attribute: materials
 
   - q: how do I charge it
     kind: attribute
-    expect_handles: [water-flosser]
+    scope: [water-flosser]
+    expect_attribute: power
 
   - q: is it BPA free
     kind: attribute
-    expect_handles: [water-flosser, custom-night-guard, custom-mouth-night-guards]
+    scope: [water-flosser, custom-night-guard, custom-mouth-night-guards]
+    expect_attribute: materials
+    expect_value_contains: bpa
 
   - q: how big is the water tank
     kind: attribute
-    expect_handles: [water-flosser]
+    scope: [water-flosser]
+    expect_attribute: dimensions
 
   - q: how many nozzles come with it
     kind: attribute
-    expect_handles: [water-flosser, replacement-nozzles-for-cordless-water-flosser]
+    scope: [water-flosser, replacement-nozzles-for-cordless-water-flosser]
+    expect_value_contains: nozzle
 
   - q: replacement tips for my flosser
     kind: semantic
@@ -55,7 +62,8 @@ questions:
 
   - q: what is the cleaner tank made of
     kind: attribute
-    expect_handles: [ultrasonic-cleaner-pro]
+    scope: [ultrasonic-cleaner-pro]
+    expect_attribute: materials
 
   - q: sanitise my toothbrush
     kind: semantic
@@ -63,7 +71,8 @@ questions:
 
   - q: will it fit an electric toothbrush head
     kind: attribute
-    expect_handles: [uv-toothbrush-sanitizer]
+    scope: [uv-toothbrush-sanitizer]
+    expect_attribute: compatibility
 
   - q: I grind my teeth at night
     kind: semantic
@@ -91,7 +100,8 @@ questions:
 
   - q: what is in the whitening gel
     kind: attribute
-    expect_handles: [whitening-gel, custom-teeth-whitening-kit]
+    scope: [whitening-gel, custom-teeth-whitening-kit]
+    expect_attribute: ingredients
 
   - q: foam that cleans and whitens at the same time
     kind: semantic
@@ -103,11 +113,13 @@ questions:
 
   - q: how many tablets are in a pack
     kind: attribute
-    expect_handles: [deep-clean-freshening-tablets]
+    scope: [deep-clean-freshening-tablets]
+    expect_value_contains: tablet
 
   - q: how often should I use it
     kind: attribute
-    expect_handles: [whitening-foam, deep-clean-freshening-tablets, custom-teeth-whitening-kit]
+    scope: [whitening-foam, deep-clean-freshening-tablets, custom-teeth-whitening-kit]
+    expect_attribute: usage
 
   - q: tool to get my night guard out
     kind: semantic
@@ -115,7 +127,8 @@ questions:
 
   - q: what is the removal tool made from
     kind: attribute
-    expect_handles: [mouth-night-guard-removal-tool]
+    scope: [mouth-night-guard-removal-tool]
+    expect_attribute: materials
 
   - q: I need my guard fast
     kind: semantic

@@ -9,9 +9,24 @@ hand-written forbid list -- a fixture can be passed by omitting the awkward prod
 database check cannot. Which of many valid products ranks first is relevance, reported
 as its own number so the two cannot be traded off.
 
+Duplicate listings are collapsed by `search`, so an expected handle can arrive as a
+sibling of the canonical hit rather than as the canonical itself. Expectations are matched
+against both. Safety is NOT: `undeclared_returns` and `forbid_handles` are checked against
+the returned canonical handles only, because those are what an answer layer would quote.
+
 A question with `expect_empty` passes only when nothing comes back. remi carries no
 free-from declarations at all, so its negation queries must return nothing; without this
 the harness cannot tell "correctly refused" from "found nothing useful".
+
+Two modes, scored separately, because they are not the same task. A discovery question
+("a fruity snack bar for a toddler") is answered by ranking the catalogue, and recall@5 is
+the right measure. A scoped question ("is it BPA free") arrives with the product already
+known -- from a product page, or the previous turn -- and the only question is whether the
+fact is present and quotable. Scoring the second as the first measures vocabulary
+distinctiveness: "tank" narrows remi to 7 of 48 products and "calories" narrows skout to 48
+of 171, which is most of why remi looked better at attributes than skout. Half the original
+attribute questions contain the word "it", which is the tell -- there is no "it" in a
+catalogue-wide search.
 
 Recall at n=10 has a standard error near 0.15, so 0.70 is indistinguishable from 0.55.
 The question sets are sized to make the number mean something, and `compare` exists
@@ -28,6 +43,7 @@ from rich.table import Table
 
 from . import db
 from .config import REPO_ROOT, StoreConfig
+from .answering import ProductNotFound, answer_for_product
 from .matching import FREE_FROM_FIELD
 from .search import search
 
@@ -81,6 +97,71 @@ def undeclared_returns(slug: str, handles: list[str], terms: list[str]) -> list[
     return sorted(set(handles) - covered)
 
 
+def _evaluate_scoped(
+    question: dict[str, Any], store: StoreConfig, handle: str
+) -> dict[str, Any]:
+    """Score one question against one known product.
+
+    The product is a parameter, not something to infer. Passing means the fact is present
+    AND quotable for that product -- not that it ranked well, which is what the
+    catalogue-wide path measures and what these questions were never asking.
+
+    One case per (question, product). All-or-nothing across a question's whole scope hides
+    the useful half of the answer: `what material is it made of` is answerable on remi's
+    water-flosser and not on either night guard, and merging those into one failure loses
+    exactly the thing worth acting on.
+    """
+    attribute = question.get("expect_attribute")
+    literal = (question.get("expect_value_contains") or "").strip().lower()
+    exclude = question.get("exclude_terms") or []
+
+    unsafe: list[str] = []
+    try:
+        answer = answer_for_product(store, handle, exclude_terms=exclude, live=False)
+    except ProductNotFound:
+        return {
+            "q": f"{question['q']}  [{handle}]",
+            "kind": question.get("kind", "attribute"),
+            "mode": "scoped",
+            "ok": False,
+            "rank": None,
+            "violations": [],
+            "relevant": False,
+            "has_expectation": bool(attribute or literal),
+            "top": "product not found",
+            "returned": 0,
+            "reranked": False,
+        }
+
+    found = True
+    why = ""
+    if attribute:
+        found = answer.can_answer(attribute)
+        why = "" if found else f"no quotable {attribute}"
+    if found and literal:
+        found = any(literal in (a["value"] or "").lower() for a in answer.stated)
+        why = "" if found else f"no quotable value containing {literal!r}"
+
+    for outcome in answer.free_from:
+        if not outcome.has_declaration:
+            unsafe.append(f"{handle}: no free-from declaration for {outcome.term}")
+
+    ok = found and not unsafe
+    return {
+        "q": f"{question['q']}  [{handle}]",
+        "kind": question.get("kind", "attribute"),
+        "mode": "scoped",
+        "ok": ok,
+        "rank": None,
+        "violations": unsafe,
+        "relevant": ok,
+        "has_expectation": bool(attribute or literal),
+        "top": why or handle,
+        "returned": len(answer.quotable),
+        "reranked": False,
+    }
+
+
 def _evaluate_one(
     question: dict[str, Any], store: StoreConfig, top_k: int, rerank: bool
 ) -> dict[str, Any]:
@@ -99,6 +180,7 @@ def _evaluate_one(
         live_prices=False,
     )
     handles = [r.handle for r in results]
+    listed = handles + [s for r in results for s in r.siblings]
     reranked = any(r.rerank_score is not None for r in results)
     unsafe = sorted(
         (set(handles) & forbidden)
@@ -110,7 +192,7 @@ def _evaluate_one(
     elif exclude:
         ok = bool(handles) and not unsafe
     elif expected:
-        ok = any(h in expected for h in handles)
+        ok = any(h in expected for h in listed)
     else:
         ok = not unsafe
 
@@ -118,9 +200,16 @@ def _evaluate_one(
         "q": question["q"],
         "kind": question.get("kind", "general"),
         "ok": ok,
-        "rank": next((n for n, h in enumerate(handles, 1) if h in expected), None),
+        "rank": next(
+            (
+                n
+                for n, r in enumerate(results, 1)
+                if r.handle in expected or any(s in expected for s in r.siblings)
+            ),
+            None,
+        ),
         "violations": unsafe,
-        "relevant": bool(expected) and any(h in expected for h in handles),
+        "relevant": bool(expected) and any(h in expected for h in listed),
         "has_expectation": bool(expected),
         "top": handles[0] if handles else None,
         "returned": len(handles),
@@ -130,12 +219,19 @@ def _evaluate_one(
 
 def run(store: StoreConfig, top_k: int = 5, rerank: bool = True, quiet: bool = False) -> dict[str, Any]:
     questions = load_questions(store.slug)
-    outcomes = [_evaluate_one(q, store, top_k, rerank) for q in questions]
+    outcomes: list[dict[str, Any]] = []
+    for q in questions:
+        if q.get("scope"):
+            outcomes.extend(_evaluate_scoped(q, store, h) for h in q["scope"])
+        else:
+            outcomes.append(_evaluate_one(q, store, top_k, rerank))
 
     hits = sum(1 for o in outcomes if o["ok"])
     violating = [o for o in outcomes if o["violations"]]
     recall = hits / len(outcomes) if outcomes else 0.0
     reranked_any = any(o["reranked"] for o in outcomes)
+    discovery_outcomes = [o for o in outcomes if o.get("mode") != "scoped"]
+    scoped_outcomes = [o for o in outcomes if o.get("mode") == "scoped"]
     scored = [o for o in outcomes if o["has_expectation"]]
     relevance = (
         sum(1 for o in scored if o["relevant"]) / len(scored) if scored else 0.0
@@ -167,7 +263,21 @@ def run(store: StoreConfig, top_k: int = 5, rerank: bool = True, quiet: bool = F
             )
         console.print(table)
 
-        console.print(f"recall@{top_k}: [bold]{recall:.2f}[/bold] ({hits}/{len(outcomes)})")
+        discovery = [o for o in outcomes if o.get("mode") != "scoped"]
+        scoped = [o for o in outcomes if o.get("mode") == "scoped"]
+        if scoped:
+            d_ok = sum(1 for o in discovery if o["ok"])
+            s_ok = sum(1 for o in scoped if o["ok"])
+            console.print(
+                f"discovery recall@{top_k}: [bold]"
+                f"{(d_ok / len(discovery) if discovery else 0):.2f}[/bold] "
+                f"({d_ok}/{len(discovery)})  -- can the catalogue surface the product"
+            )
+            console.print(
+                f"scoped answerability: [bold]{(s_ok / len(scoped)):.2f}[/bold] "
+                f"({s_ok}/{len(scoped)})  -- is the fact present and quotable on a known product"
+            )
+        console.print(f"combined: [bold]{recall:.2f}[/bold] ({hits}/{len(outcomes)})")
         console.print(
             f"relevance@{top_k} (expected handle in results, where one was named): "
             f"[bold]{relevance:.2f}[/bold] "
@@ -206,6 +316,14 @@ def run(store: StoreConfig, top_k: int = 5, rerank: bool = True, quiet: bool = F
 
     return {
         "recall": recall,
+        "discovery_recall": (
+            sum(1 for o in discovery_outcomes if o["ok"]) / len(discovery_outcomes)
+            if discovery_outcomes else None
+        ),
+        "scoped_answerability": (
+            sum(1 for o in scoped_outcomes if o["ok"]) / len(scoped_outcomes)
+            if scoped_outcomes else None
+        ),
         "relevance": relevance,
         "reranked": reranked_any,
         "hits": hits,
