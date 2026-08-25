@@ -671,6 +671,28 @@ search. No `read_themes`. No `bulkOperationRunQuery`. No web API surface. No app
 Dockerfile. No quotability decay — it needs the re-confirmation loop that incremental
 re-ingestion would provide.
 
+**Amended 2026-08-25 — LLM label classification is permitted; LLM extraction is not.**
+
+The exclusion above was written against a model *reading a page and producing facts*. That
+stays excluded, and nothing in the ingestion path sends page content to a model.
+
+What is now permitted is narrower: classifying a recovered **label** as a product
+specification or a storefront widget. `labels.ClassifierPolicy` sends one label and up to
+three example values, and receives one word back. It cannot produce a value, only decide
+what an already-extracted label means. Verdicts are cached by `(store, label)` in
+`data/<slug>/label_verdicts.json` and committed, so a classified profile re-runs offline and
+deterministically. The deterministic guards still run afterwards and can reject anything the
+model accepted; no policy can promote past `is_quotable_theme_value` or
+`is_commerce_constant`.
+
+**The measurement did not justify making it the default.** Scored against the hand-authored
+reference sets, the classifier agreed on 22 of 30 remi labels and 4 of 8 skout labels, read
+skout's `Pack Size` and `Size` as specifications, and read remi's `Quantity` as a widget —
+the single case the label gate was built to fix. Scoped answerability under the classifier
+matched the ungated control on both stores rather than the reference set, and it
+reintroduced the widget-quotability breach. `--label-policy llm` therefore remains available
+and off by default. See `docs/FINDINGS.md` §7.
+
 ---
 
 ## 10. Open items
@@ -748,15 +770,16 @@ What remains open:
       acceptable to repeat to a shopper is a business decision and belongs with whoever owns that
       risk, not in this document.
 
-- [ ] **Theme spec extraction — the label gate.** Facts plainly visible on a product page are not
-      becoming queryable facts. Two causes remain: the not-a-label denylist is global and
-      store-blind (`quantity` is rejected as a cart widget, and on remi's tablets it is a real
-      spec), and per-product theme specs are never stored at all because `merge` writes theme
-      assertions only from template constants. Agreed direction: per-store label allow/deny lists
-      in `config/stores.yaml`, plus storing per-product pairs as `retrieval` by default and
-      promoting only allow-listed labels to `quotable`. An LLM classification pass is under
-      consideration and would reopen the §9 boundary. Full analysis in `docs/PENDING.md` §1.
-      **Current scoped answerability figures are a floor, not a measurement.**
+- [x] **Theme spec extraction — the label gate.** Closed 2026-08-25. Three extraction defects
+      were fixed and a per-store label policy now decides whether a recovered `Label: Value`
+      pair is a product specification or a storefront widget. remi's scoped answerability rose
+      from 0.65 to 0.75; skout's fell from 0.87 to 0.78 because two questions were previously
+      answered by a variant picker. 124 widget assertions that were quotable on skout no longer
+      are. The LLM classifier was built, measured and left off by default — see §9's amendment
+      and `docs/FINDINGS.md` §7. Two consequences worth carrying forward, both in
+      `docs/PENDING.md`: the reference sets are one reader's judgement on two stores, and
+      whether a variant picker legitimately answers "how many come in a pack" is an unsettled
+      product question rather than a defect.
 
 - [ ] Whether a metafield write fires `products/update`. Irrelevant to v0, required before any
       incremental design.

@@ -1,6 +1,6 @@
 # Pending work
 
-**Last updated:** 2026-08-25.
+**Last updated:** 2026-08-25 (label gate closed).
 
 The working list of unfinished work, with the evidence behind each item and the options
 considered. Written to be picked up by someone with no prior context.
@@ -26,134 +26,71 @@ Pipeline, one CLI subcommand per stage:
 docker compose up -d db
 uv run poc report --store remi     # the deliverable; reads the existing database
 uv run poc eval   --store remi
-uv run pytest -q                   # 90 tests, no token needed
+uv run pytest -q                   # 110 tests, no token needed
 ```
 
 `.env` holds `PIER39_SHOPIFY_TOKENS` and `OPENAI_API_KEY`. `COHERE_API_KEY` is a placeholder.
 `PIER39_SHOPIFY_STOREFRONT_TOKENS` is unset.
 
-**State as of this writing** — all uncommitted on `main`:
+**State as of this writing** — measured 2026-08-25 with the `static` label policy, which is
+the `merge` default. Earlier revisions of this table are superseded; see `docs/FINDINGS.md`
+§7 for the arm-by-arm comparison behind the two changed rows.
 
 | | skout | remi |
 |---|---|---|
 | Products indexed | 171 | 48 |
-| Assertions (quotable / retrieval) | 2,185 (1,473 / 712) | 636 (384 / 252) |
-| Theme-sourced assertions | 118 | 73 |
+| Assertions (quotable / retrieval) | 2,069 (1,362 / 707) | 639 (387 / 252) |
+| Theme-sourced assertions | 2 | 76 |
 | Attribute reachability | api 4, theme 2, image 3, absent 4 | theme 6, absent 4 |
-| Discovery recall@5 | 0.92 (23/25) | 1.00 (22/22) |
-| Scoped answerability | 0.87 (20/23) | 0.65 (13/20) |
+| Discovery recall@5 | 0.92 | 1.00 |
+| Scoped answerability | 0.78 (was 0.87) | 0.75 (was 0.65) |
 | Constraint violations | 0 | 0 |
+
+skout's theme-sourced count falls from 118 to 2 because the label gate suppresses variant
+and subscription pickers that were previously stored, and quotable at that. Its scoped
+answerability falls with them; §1a explains why that is a judgement rather than a
+regression.
 
 ---
 
-## 1. Theme spec extraction — the label gate *(highest priority, direction agreed)*
+## 1. Theme spec extraction — the label gate *(closed 2026-08-25)*
 
-### The problem
+Closed. Full measurements in `docs/FINDINGS.md` §7; the §9 amendment permitting label
+classification is in `docs/DESIGN.md`. Summary of what changed and what it cost:
 
-Facts plainly visible on a product page are not becoming queryable facts. Four distinct causes
-were found; two are fixed, two are not.
+- Three extraction defects fixed. The `quantity` denylist entry is gone, the `label_for`
+  path gained a numeric guard, and labelled pairs are now recovered from the whole product
+  region rather than only from residual blocks.
+- **The third was the real cause, and this document had it wrong.** Per-product specs were
+  not lost because `merge` writes only template constants. They were lost at extraction: a
+  spec whose text also appeared in `description_html` was classed as already explained and
+  never became a typed pair. remi's `Material: Food-grade material, BPA-free, and
+  phthalate-free` is the clearest case.
+- A per-store label policy now decides spec, widget or uncertain, applied at merge so the
+  arms differ by one flag. Unrecognised labels become retrieval assertions, never quotable.
+- remi scoped answerability 0.65 → 0.75. skout 0.87 → 0.78, discussed below. Discovery
+  recall and constraint violations unchanged.
+- 124 widget assertions that were quotable on skout no longer are.
 
-**Fixed already:**
+Two questions this raised, both open:
 
-- Group chrome was discarded before template-constant extraction, so any template group with two
-  or more crawled pages lost its entire spec table.
-- A spec rendered as a single text run (`Material: Dental-grade polymer`) could not be read,
-  because `blocks.label_for` only handles a label node followed by a value node.
-  `blocks.inline_label` now handles the first shape.
+**1a. Does a variant picker answer "how many bars come in a pack"?** skout's fall from 0.87
+to 0.78 is two questions previously answered by `Pack Size`, which is a variant selector.
+The reference set treats a control's current selection as not a property of the product.
+That is a defensible position and not the only one. Reversing it for this store is one line
+in `config/stores.yaml` (`spec_label_allow: ["Pack Size"]`) and would make 101 picker values
+quotable again. Whoever owns the risk of quoting them should decide, not this document.
 
-**Still open:**
+**1b. The reference sets are one reader's judgement on two stores.** `config/spec_labels/`
+holds 38 hand-authored verdicts. Precision figures measured against them are agreement with
+that judgement, not correctness. A second reader labelling the same 38 independently would
+show how much of the classifier's disagreement is model error and how much is genuine
+ambiguity. Cheap, and it has not been done.
 
-**1a. The not-a-label denylist is global and store-blind.** `blocks.NOT_A_LABEL_PATTERNS` rejects
-any label matching `select|choose|pick|enter|search|filter|sort|quantity|qty`, to keep storefront
-widgets out. On `deep-clean-freshening-tablets` the page renders:
-
-```
-<p><strong>Quantity:</strong> 120 tablets (roughly 4 months of daily use)
-```
-
-The pair extracts cleanly and is thrown away because `quantity` is denylisted. It is a cart widget
-on most stores and a real spec on this one.
-
-**1b. Per-product theme specs are never stored at all.** `merge.py` writes theme assertions only
-from **template constants** — spec pairs shared across every crawled page of a template group (the
-loop at `merge.py:219`). A spec appearing on a single product's page is classed as per-product
-theme content, counted toward coverage, and discarded. On remi this loses 9 real pairs:
-
-```
-mouth-night-guard-removal-tool   Material           = Food-grade material, BPA-free, phthalate-free
-night-guard-super-bundle         Material           = 10% Hydrogen Peroxide, BPA-free, phthalate-free
-night-guard-super-bundle         Treatment duration = On-going, use nightly
-uv-toothbrush-sanitizer          Kill rate          = 99.9% of bacteria
-deep-clean-freshening-tablets    Compatible with    = Night guards, retainers, aligners, dentures
-```
-
-### Why it cannot simply be relaxed
-
-Extraction is not the weak part — it finds 69 labelled pairs on remi and 303 on skout. The gate
-deciding which become facts is, and it is wrong in both directions. Storing per-product pairs
-naively floods skout, whose 222 unstored pairs are dominated by subscription widgets:
-
-| label | count |
-|---|---|
-| This item | 113 |
-| Pack Size | 53 |
-| Delivery Frequency | 50 |
-| everything else | 6 |
-
-A single global regex cannot separate "product spec" from "storefront widget" across two themes.
-`Quantity` is a widget on most stores and a spec here; `Pack Size` sounds like a spec and is a
-variant picker. Same conclusion `families.family_key` reached against a third store (item 6) —
-the rules are store-shaped.
-
-### Options
-
-**A — Per-store label allow/deny lists in `config/stores.yaml`.** *(agreed direction)*
-Each store gets `spec_labels.allow` / `spec_labels.deny`, applied on top of the global guards.
-Cheap, deterministic, inspectable, reversible per store.
-*Tradeoff:* manual work per store, and it concedes the deterministic rules do not generalise —
-which the POC was partly built to test. Accepted explicitly: attributes and their labels differ
-per store, so per-store configuration is expected rather than a workaround.
-
-**B — Store per-product spec pairs as `retrieval` by default, promote to `quotable` only for
-allow-listed labels.** *(agreed direction)*
-Keeps the material findable by search without risking a widget being quoted to a shopper as fact.
-Pairs naturally with A: the allow list is what promotes.
-*Tradeoff:* grows the retrieval corpus and the embedding cost; a real spec on an unlisted label
-stays unquotable until someone adds it.
-
-**C — One LLM pass classifying candidate `label: value` pairs as spec vs widget.** *(under
-consideration, not decided)*
-A model would trivially separate `Quantity: 120 tablets` from a cart picker, and `This item:` from
-`Material:`. The only option that generalises to a store nobody has looked at.
-*Tradeoff:* `DESIGN.md` §9 puts LLM extraction out of scope for v0 and §3 says such decisions are
-not to be relitigated casually, so this reopens a settled one. It adds a model dependency to the
-ingestion path, needs its own eval to show it beats the regex, and introduces non-determinism into
-a stage whose current virtue is reproducibility. Mitigation if adopted: classify only the *label*,
-cache by `(store, label)`, and keep the deterministic guards as a floor — the model can only ever
-demote, never promote past the commerce and quotability checks.
-
-### Recommended order
-
-A and B together first; they are agreed and independent of C. Handle `quantity` as part of A
-rather than as a special case: drop it from the global denylist when the value is not a bare
-integer. Then re-measure scoped answerability before deciding on C — if A+B closes most of the
-gap, C becomes a generalisation question rather than an accuracy one.
-
-### How to verify
-
-```bash
-uv run poc profile --store remi && uv run poc merge --store remi && uv run poc index --store remi
-uv run poc facts deep-clean-freshening-tablets --store remi --no-live
-uv run poc facts mouth-night-guard-removal-tool --store remi --no-live --attribute materials
-uv run poc eval --store remi    # scoped answerability should rise from 0.65
-uv run poc eval --store skout   # must NOT fall; watch for widget labels turning quotable
-```
-
-Regression guards: 0 promotional theme facts quotable (`profile.is_commerce_constant`), and
-`This item` / `Pack Size` / `Delivery Frequency` must never appear as quotable on skout.
-
-**Current scoped answerability numbers are a floor, not a measurement.** At least two of remi's
-seven failures are extraction defects rather than missing content.
+The classifier arm was built, measured and left off by default. It did not beat the
+hand-authored sets on either store and read remi's `Quantity` as a widget, which is the case
+the item existed to fix. Its remaining case is generalisation to a store nobody has looked
+at, which is item 6, not accuracy.
 
 ---
 
@@ -325,15 +262,15 @@ doing before the reranker decision, since a third store may move recall more tha
 
 ## 8. Repository state
 
-The code work described above is committed as `e74427d` — "feat: update harness with separate
-search paths and tests" — on `main`. That commit carries the full-catalogue crawl, the family
-collapse, retrieval diagnostics, fact ages, the scoped/discovery split, and the two theme-spec
-fixes listed as done in item 1.
+The label-gate work is committed on the `worktree-label-gate` branch: extraction fixes, the
+policy layer, the classifier, the three-arm comparison, and 20 new tests. The suite is 110
+tests and still needs no token.
 
-Uncommitted at the time of writing: `README.md`, `docs/DESIGN.md`, `docs/FINDINGS.md` and this
-file, all documentation.
+The documentation described in earlier revisions of this file as uncommitted was committed
+in `93e50fc`; that note was stale and is corrected here.
 
-The Postgres database holds the measured state the numbers above describe, including the crawl of
-152 skout pages. It is a Docker volume, not in the repo — `docker compose up -d db` brings it
-back, but a `docker compose down -v` would destroy it and require a full re-crawl and re-embed to
-reproduce.
+The Postgres database holds the measured state above and is settled on the `static` policy,
+which is now the `merge` default. It is a Docker volume, not in the repo — `docker compose up
+-d db` brings it back, but a `docker compose down -v` would destroy it and require a full
+re-crawl and re-embed to reproduce. `poc init-db` is idempotent and carries the
+`template_constants.handle` migration.

@@ -35,6 +35,14 @@ uv run poc init-db
 
 Store settings live in `config/stores.yaml` and contain no secrets.
 
+`config/spec_labels/<slug>.yaml` holds the per-store label reference set: for each label the
+theme renders as a `Label: Value` pair, whether it is a product **spec**, a storefront
+**widget** such as a variant or subscription picker, or **uncertain**. Only `spec` may become
+quotable; `uncertain` is stored as retrieval, findable but never repeated to a shopper as
+fact; `widget` is not stored. The distinction cannot be made globally — skout's `Pack Size`
+is a variant picker and remi's `Quantity` is how many tablets are in the box. See
+`docs/FINDINGS.md` §7.
+
 ---
 
 ## Run it without a token
@@ -52,7 +60,7 @@ That seed is synthetic — five products, no review content — so **its coverag
 not meaningful**. It proves the pipeline runs.
 
 ```bash
-uv run pytest -q          # 90 tests against the real fixtures
+uv run pytest -q          # 110 tests against the real fixtures
 ```
 
 ---
@@ -118,9 +126,17 @@ Every command takes `--store` (which overrides the `enabled` flag) and most take
 | `fetch-api` | admin token | `api.jsonl`, `metafield_definitions.jsonl` |
 | `fetch-html` | `api.jsonl` | `pages/*.html`, `pages/*.md`, `fetch_manifest.jsonl` |
 | `profile` | `api.jsonl` + `pages/` | `profile.json` |
-| `merge` | `api.jsonl` + `profile.json` | Postgres: assertions, edges, constants |
+| `merge` | `api.jsonl` + `profile.json` + `spec_labels/` | Postgres: assertions, edges, constants |
 | `index` | Postgres | Postgres: documents + vectors |
 | `search` / `eval` | Postgres + live API | stdout |
+| `labels` | `profile.json` | stdout: the label inventory to hand-label |
+| `compare-labels` | `profile.json` + OpenAI | stdout: classifier scored against the reference set |
+
+`merge --label-policy none|static|llm` selects the label gate. `static` is the default and
+reads the reference set. `llm` classifies each distinct label once, caches the verdict in
+`data/<slug>/label_verdicts.json` and is off by default: measured against both pilot stores
+it did not beat the hand-authored sets. `none` reproduces behaviour before the gate existed
+and exists as a control.
 
 Stages never fetch on each other's behalf. That is what makes `profile` re-runnable
 against saved pages while you tune thresholds.

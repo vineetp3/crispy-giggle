@@ -312,3 +312,104 @@ $15`, authored that way by the merchant. Titles must stay quotable, so the hones
 that no price *metafield* reaches a quotable assertion, and that a merchant can still put a price
 in a name. Worth raising with the publisher for the same reason as the mislabelled tank capacity
 in §5.
+
+---
+
+## 7. The label gate, and the LLM classifier arm
+
+Measured 2026-08-25, both pilot stores, full catalogues, no reranking.
+
+### What was actually broken
+
+`docs/PENDING.md` §1 recorded two open causes. Investigation found a third, which was the
+one that mattered, and corrected the account of the second.
+
+**The denylist.** `blocks.NOT_A_LABEL_PATTERNS` rejected any label beginning `quantity` or
+`qty`. remi's tablets render `Quantity: 120 tablets (roughly 4 months of daily use)`, a real
+specification. Removed from the global list; the existing numeric-value check still rejects
+a bare integer, so a quantity stepper does not become a fact.
+
+**A missing numeric guard.** The `label_for` path applied no numeric check to the value, so
+count and date blocks paired with adjacent headings. Removing four junk skout pairs,
+including `This item = 354` and `December = 12/19`, cost nothing.
+
+**Eligibility, which was the real cause.** Labelled pairs were only ever formed from
+*residual* blocks — those not already explained by an admitted metafield or the description
+prose. A specification whose text also appears in `description_html` was therefore never
+turned into a typed pair, even though the page renders an explicit label for it. remi's
+removal tool is the clearest case: `Material: Food-grade material, BPA-free, and
+phthalate-free` is on the page **and** inside the description, so it was dropped and the
+product had no `materials` attribute. The label is precisely the structure that turns prose
+into a checkable fact, so discarding a labelled pair because the prose already contains the
+sentence discards the only thing worth having.
+
+This corrects `PENDING.md` §1b. Per-product specs were not lost because `merge` writes only
+template constants; most of remi's are in singleton template groups and were already stored.
+They were lost at extraction.
+
+### The gate
+
+Extraction now recovers labelled pairs from the whole product region and deduplicates them
+against the template constants already emitted. That yields 8 net-new pairs on remi and 86
+on skout, and 38 distinct labels across both stores — small enough to hand-label.
+
+Three verdicts. `spec` may become quotable, `uncertain` becomes a retrieval assertion,
+`widget` is not stored. Unrecognised labels are `uncertain`, so the default for anything
+nobody has ruled on is findable but never repeated to a shopper as fact. The deterministic
+guards still run afterwards; no policy can promote past them.
+
+### The regression guard was already breached
+
+`PENDING.md` specified that `This item`, `Pack Size` and `Delivery Frequency` must never be
+quotable on skout. They already were, before any of this work, as **template constants** —
+101 `Pack Size`, 10 `Size` and 2 `Delivery Frequency` quotable assertions. The gate
+therefore had to cover template constants too, demote-only, so that a label nobody has
+ruled on keeps its existing behaviour.
+
+### The three arms
+
+| arm | remi scoped | skout scoped | remi assertions | skout assertions | widget labels quotable on skout |
+|---|---|---|---|---|---|
+| `none` (control) | 0.70 | 0.87 | 640 (388 q) | 2,184 (1,480 q) | yes, 124 |
+| `static` | **0.75** | 0.78 | 641 (389 q) | 2,062 (1,356 q) | no |
+| `llm` | 0.70 | 0.87 | 631 (378 q) | 2,187 (1,480 q) | yes, 111 |
+
+Discovery recall@5 was unchanged in every arm — 1.00 on remi, 0.92 on skout — and constraint
+violations stayed 0 throughout. The control is not the 0.65 / 0.87 recorded earlier: the
+three extraction fixes alone lifted remi from 0.65 to 0.70 before any policy ran.
+
+### The classifier lost, and lost on the case it was meant to win
+
+`gpt-4o-mini`, one call per distinct label, cached and committed. Scored against the
+hand-authored reference sets:
+
+| store | agreement | widget precision | widget recall | pairs affected by a disagreement |
+|---|---|---|---|---|
+| remi | 22/30 | 0.50 | 0.60 | 15 of 65 |
+| skout | 4/8 | 0.67 | 0.67 | 48 of 105 |
+
+It read skout's `Pack Size` and `Size` as specifications, which is what reintroduced the
+breach, and read remi's `Quantity` as a widget — the single case the whole item existed to
+fix. It also demoted `Power` and `Tank capacity` on remi. Its errors are not random: it
+tracks how a label *sounds* rather than what the store does with it, which is the same
+failure mode as the global regular expression it was meant to replace.
+
+The pre-registered rule was that the classifier must beat the reference set by more than the
+metric's resolution. It matched the ungated control on both stores instead. `--label-policy
+llm` stays available and off by default.
+
+**One caveat on the comparison.** A single model and prompt were tested. The result shows
+this classifier does not beat a hand-authored list on two stores where the list was authored
+by someone who had read the pages; it does not show that no classifier could. The
+generalisation question — a store nobody has looked at — is untouched by this measurement
+and belongs with third-store validation.
+
+### skout's fall from 0.87 to 0.78 is a judgement, not a defect
+
+Two questions of the form *how many bars come in a pack* were previously answered by `Pack
+Size`, the variant picker. Suppressing it removes those answers. A picker does list the
+purchasable sizes, so calling that answer wrong is a position, not a fact. The reference set
+takes the conservative one: a control's current selection is not a durable property of the
+product. Reversing it for this store is one line —
+`spec_label_allow: ["Pack Size"]` in `config/stores.yaml` — and would make 101 picker values
+quotable again. That trade belongs with whoever owns the risk of quoting them.
