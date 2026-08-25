@@ -17,10 +17,10 @@
 # pack sizes to a shopper is acceptable and useful. It makes 111 picker values quotable.
 # Reverse by setting both back to `widget`.
 #
-# This change happened AFTER the classifier was scored against this file, so `docs/FINDINGS.md`
-# 7 keeps the original numbers. Scored against the file as it now stands, skout agreement
-# would be 6/8 rather than 4/8. That is a decision moving toward the model, not evidence
-# the model was right, and the two must not be conflated.
+# This change happened AFTER the classifier was scored against this file. Measured against the
+# file as originally authored, gpt-4o-mini agreed on 4 of 6 confident calls here and gpt-5.5 on
+# 6 of 6; against the file as it now stands gpt-4o-mini would read better. That is the reference
+# moving toward one model, not evidence that model was right, and the two must not be conflated.
 
 labels:
   "About the shirt": uncertain

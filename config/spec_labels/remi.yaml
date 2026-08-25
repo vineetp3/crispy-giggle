@@ -11,7 +11,12 @@
 #   uncertain  genuine product content that is not a checkable property; retrieval only
 #
 # These are one reader's judgements on one store. Precision measured against this file is
-# agreement with that judgement, not correctness in general. See docs/FINDINGS.md.
+# agreement with that judgement, not correctness in general.
+#
+# Measured 2026-08-25 on the 23 labels below carrying a confident spec or widget call:
+# gpt-4o-mini agreed on 18 and promoted one widget to a spec; gpt-5.5 agreed on all 23 and
+# promoted none. gpt-4o-mini read `Quantity` as a widget, which is the single case the label
+# gate exists to fix. See docs/DESIGN.md 9.
 
 labels:
   "Automatic": uncertain

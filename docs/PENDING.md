@@ -33,8 +33,8 @@ uv run pytest -q                   # 131 tests, no token needed
 `PIER39_SHOPIFY_STOREFRONT_TOKENS` is unset.
 
 **State as of this writing** — measured 2026-08-25 with the `static` label policy, which is
-the `merge` default. Earlier revisions of this table are superseded; see `docs/FINDINGS.md`
-§7 for the arm-by-arm comparison behind the two changed rows.
+the `merge` default. Re-derive it with `poc report` and `poc eval` rather than trusting it — it
+is a snapshot, and the pipeline has been re-run since.
 
 | | skout | remi |
 |---|---|---|
@@ -54,8 +54,8 @@ means.
 
 ## 1. Theme spec extraction — the label gate *(closed 2026-08-25)*
 
-Closed. Full measurements in `docs/FINDINGS.md` §7; the §9 amendment permitting label
-classification is in `docs/DESIGN.md`. Summary of what changed and what it cost:
+Closed. The rules and their justifications are in `docs/DESIGN.md` §5.3; the §9 amendment
+permitting label classification is there too. Summary of what changed and what it cost:
 
 - Three extraction defects fixed. The `quantity` denylist entry is gone, the `label_for`
   path gained a numeric guard, and labelled pairs are now recovered from the whole product
@@ -129,7 +129,9 @@ the cheapest way to get a number.
 
 Built as the agreed A+D shape. `poc chat` is a REPL and `poc chat-replay` is a batch
 harness, both going through one `chat.answer`, so they cannot disagree about what the model
-was shown. Measurements and the scorer's own defects are in `docs/FINDINGS.md` §8.
+was shown. The scorer's own defects are encoded as named regression tests in
+`tests/test_chat.py`, which is a better record than prose because a test fails when the knowledge
+is lost.
 
 `src/pier39_poc/chat.py` and `src/pier39_poc/llm.py` are imported by the CLI only, never by
 an ingest stage, so `DESIGN.md` §9 stays honest.
@@ -257,12 +259,50 @@ doing before the reranker decision, since a third store may move recall more tha
   appended to the question text. An explicit column would be clearer.
 - **`poc facts` has no `--why`.** It reports that an attribute is answerable without showing which
   assertion satisfied it. Useful when debugging the label gate in item 1.
-- **Verify the skout assertion-count attribution.** The drop from 2,440 to roughly 2,080 after the
-  full crawl was attributed in `FINDINGS.md` to sampling bias being removed — a larger hit-rate
-  denominator. That was written before the group-chrome bug in item 1 was found, and that bug also
-  suppressed assertions. The split between the two causes has not been measured.
+- **Verify the skout assertion-count attribution.** *(recommend dropping)* The drop from 2,440 to
+  roughly 2,080 after the full crawl was attributed to sampling bias being removed — a larger
+  hit-rate denominator. That was written before the group-chrome bug in item 1
+  was found, and that bug also suppressed assertions. Three further extraction changes have landed
+  since (the `quantity` denylist removal, the `label_for` numeric guard, and full-region labelled
+  pair recovery), so the original number can no longer be reproduced and the split between causes
+  cannot be recovered — only re-derived from scratch. The archaeology is not worth the answer.
 - **`ruff` is not a project dependency** despite a `.ruff_cache` in the tree. There is no lint
   step. Either add it to the dev extra or delete the cache directory.
+
+Added 2026-08-25, from building the label gate and the chat layer. Rough order of value:
+
+- **`--rescore` on `poc chat-replay`.** The highest-value item here. Turn answers are already in
+  `data/<slug>/chat_replay.jsonl` and the scorer is pure text analysis over that text, so
+  re-scoring should never call a model. It currently does, which made iterating on the
+  groundedness metric expensive — three scorer defects were found by measuring, and each fix meant
+  re-running 42 model calls. The remi baseline was ultimately recovered from the log with a
+  throwaway script, which is the proof this wants to be a flag.
+- **Record which request shape `llm.complete` used.** It attempts three — modern with
+  `reasoning_effort`, modern without, then legacy `temperature`/`max_tokens` — and records none.
+  A model that rejects `reasoning_effort` therefore runs at its own default effort and nothing
+  says so, meaning two runs are not necessarily comparable. Same silent-degradation pattern as the
+  reranker's 401 and the Storefront fallback, both of which were worth surfacing.
+- **Expose reasoning effort.** `--effort` on `chat` and `chat-replay` plus an environment
+  variable. It is hardcoded `low` in `llm.py`, chosen while probing one-word label classification
+  and carried into grounded answering — a much harder task — without being revisited. Every
+  measurement recorded anywhere is at `low`. Raising it also needs the completion budget raised,
+  since reasoning tokens are drawn from the same allowance and an exhausted budget returns empty,
+  which `complete` treats as a failed attempt and silently retries in another shape.
+- **A hedge is scored as an uncited claim.** *"I don't have the tank size in the available facts"*
+  states no product fact but counts against the answer. Four of remi's six ungrounded turns are
+  this shape, so the 0.85 baseline is a floor. Fixing it needs either a non-claim detector or an
+  expectation carried in the question file, and the second is the more honest of the two.
+- **Record which client served the live price read.** `Diagnostics` tracks whether the read
+  failed but not whether Storefront or the Admin fallback answered it, so a base-market price is
+  indistinguishable from a market-correct one in any result. Related: `attach_live` fetches the
+  Storefront `currencyCode` and then discards it, so one of the three stated reasons for
+  preferring Storefront currently buys nothing even when a token exists.
+- **Move `labels.STORE_CATEGORY` into `config/stores.yaml`.** A dictionary keyed by store slug,
+  hardcoded in the module, supplying the classifier its one line of store context. It will not
+  survive a third store, which is item 6.
+- **Promote-to-eval command.** Chat turns already log a `question_yaml` field in the shape
+  `config/questions/*.yaml` uses, with `scope` attached when a product was held. The remaining
+  work is a command that appends it to the store's question file.
 
 ---
 

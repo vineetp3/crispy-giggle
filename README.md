@@ -5,8 +5,8 @@ metafields and rendered storefront HTML, work out where each publisher's product
 actually lives, load it into Postgres with provenance, and query it.
 
 **Read `docs/DESIGN.md` first.** It is the build specification and the decisions register.
-`docs/FINDINGS.md` records what the live runs measured, and `docs/PENDING.md` is the unfinished
-work with the options and tradeoffs for each.
+`docs/PENDING.md` is the unfinished work, with the options and tradeoffs for each. Current
+measurements are not written down anywhere — run the commands below and read the output.
 
 The deliverable is `poc report` — the per-store profile, headed by which attributes each store
 can answer and from which source. `poc search` exists to validate it.
@@ -41,7 +41,7 @@ theme renders as a `Label: Value` pair, whether it is a product **spec**, a stor
 quotable; `uncertain` is stored as retrieval, findable but never repeated to a shopper as
 fact; `widget` is not stored. The distinction cannot be made globally — skout's `Pack Size`
 is a variant picker and remi's `Quantity` is how many tablets are in the box. See
-`docs/FINDINGS.md` §7.
+`docs/DESIGN.md` §5.3, and the per-label reasoning in `config/spec_labels/*.yaml`.
 
 ---
 
@@ -219,8 +219,21 @@ the key and nothing about whether a merchant vetted it.
 
 ## Status
 
-All eight criteria in `docs/DESIGN.md` §2 pass against live runs on both stores. Measured
-results, per-store profiles and data-quality findings are in `docs/FINDINGS.md`.
+All eight criteria in `docs/DESIGN.md` §2 pass against live runs on both stores.
+
+**No current measurement is written down in this repository.** Numbers go stale the moment the
+pipeline is re-run, so they are printed on demand instead:
+
+```bash
+uv run poc report      --store remi   # attribute reachability, admitted and rejected keys
+uv run poc eval        --store remi   # discovery recall, scoped answerability, violations
+uv run poc chat-replay --store remi   # groundedness, and every invalid citation
+uv run poc labels      --store skout  # the theme labels the store renders
+```
+
+What is written down is the reasoning a run cannot reproduce: why each rule exists
+(`docs/DESIGN.md` §5), which publisher data is untrustworthy (§11), and what is still open
+(`docs/PENDING.md`).
 
 Two things have never executed, and every number should be read with them in mind:
 

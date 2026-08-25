@@ -58,7 +58,7 @@ stay in force until that rule produces a number.
 
 | Decision | Value | Note |
 |---|---|---|
-| Repo location | `/Users/vineetsawhney/Desktop/code/pier39-discovery-poc` | Local only. No git remote. Do not `git init` until asked |
+| Repo location | `/Users/vineetsawhney/Desktop/code/pier39-discovery-poc` | Now a git repository with an `origin` remote. The original decision was local-only; superseded 2026-08-25 |
 | Relationship to main repo | None | `personapay-backend-publisher` is not modified |
 | Python | 3.11 | Matches the existing runtime |
 | Dependency management | `uv` + `pyproject.toml` | |
@@ -130,8 +130,15 @@ and correct for a store whose coverage analysis shows the API already holds ever
 
 **Initial store config:**
 
-- `skout` — domain `www.skoutorganic.com`, `fetch_profile: plain`
-- `remi` — domain `shopremi.com`, `fetch_profile: stealth`, `concurrency: 2`
+- `skout` — domain `skout-development.myshopify.com`, `fetch_profile: plain`, `crawl_scope: all`
+- `remi` — domain `remi-club.myshopify.com`, `fetch_profile: stealth`, `concurrency: 2`,
+  `crawl_scope: all`
+- `countrylife` — domain `countrylifefoods.com`, `enabled: false`, `crawl_scope: none`. Retained
+  for the third-store comparison in §10
+
+The `.myshopify.com` hosts are the ones configured. Earlier revisions of this document named the
+public domains `www.skoutorganic.com` and `shopremi.com`; the empirical findings in §11 were
+gathered against those.
 
 ### 4.2 Environment
 
@@ -310,6 +317,43 @@ type, none of which a theme constant has. remi renders `Birthday Sale: 50% Off` 
 22 products. `is_commerce_constant` keys on discount language rather than on the presence of a
 number, because `Formula: 3.8% Hydrogen Peroxide` is a real concentration and must survive.
 
+**Labelled pairs are recovered from the whole product region, not only from residual blocks.**
+Eligibility was the cause of the largest single content loss found in this build. A pair was only
+formed from blocks not already explained by an admitted metafield or the description prose, so a
+specification whose text also appeared in `descriptionHtml` never became a typed pair even though
+the page renders an explicit label for it. remi's removal tool is the clearest case:
+`Material: Food-grade material, BPA-free, and phthalate-free` sits on the page *and* inside the
+description, so the product reported no material at all. The label is the structure that turns
+prose into a checkable fact; discarding it because the prose contains the sentence discards the
+only part worth having. Pairs are now recovered across the region and deduplicated against the
+template constants already emitted.
+
+**The label gate decides spec from widget, per store.** Extraction is not the weak part — it finds
+69 labelled pairs on remi and 303 on skout. Deciding which become facts is, and a global rule
+cannot: skout's `Pack Size` reads like a specification and is a variant picker, while remi's
+`Quantity` is denylisted as a cart widget and is a real count of tablets. The same label means
+opposite things on the two stores.
+
+`labels.py` therefore holds a per-store policy returning `spec`, `widget` or `uncertain` for each
+label, applied in `merge` rather than here so that `profile` stays deterministic and offline and
+every candidate stays inspectable in `profile.json`. `spec` may become quotable, `uncertain`
+becomes a retrieval assertion — findable but never stated as fact — and `widget` is not stored.
+An unrecognised label is `uncertain`, so the default for anything nobody has ruled on is safe.
+The deterministic guards above run afterwards and can reject anything a policy accepted; no
+policy can promote past them.
+
+Three policies. `static` reads `config/spec_labels/<slug>.yaml` and is the default. `none`
+reproduces behaviour from before the gate and exists as an experimental control. `llm` classifies
+each distinct label once through a model, caches the verdict by `(store, model, label)` and is off
+by default — see §9. Manual `spec_label_allow` and `spec_label_deny` on the store config override
+any policy, so a bad verdict is correctable without a code change.
+
+The gate covers template constants too, demote-only: a label a policy calls `widget` is dropped,
+and anything else keeps its existing behaviour. That was not optional. `Pack Size`, `Size` and
+`Delivery Frequency` were already reaching quotable assertions on skout as template constants
+before this work began, which is 113 assertions the original regression guard had assumed were
+impossible.
+
 **Step 3 — Residual cleanup.** Two deterministic filters:
 
 - **Templated widget text.** Review-widget accessibility strings such as
@@ -404,7 +448,8 @@ Emits **field assertions**, not a merged blob. One row per `(product, field, sou
 | Structured attribute in a metafield | Metafield wins. A typed list beats extracted prose |
 | Present in both metafield and page | Metafield wins on value. The page contributes confirmation and the label |
 | Page only, identical across a template | Template constant. Store once against the template, attach to all its products |
-| Page only, varying per product | Per-product theme content. Counts against coverage |
+| Page only, varying per product, **carrying a recovered label** | Stored, tiered by the label policy — §5.3. `spec` may be quotable, `uncertain` is retrieval only, `widget` is not stored |
+| Page only, varying per product, unlabelled | Per-product theme content. Counts against coverage, not stored |
 | Metafield only, never rendered | Keep. Classified as retrieval material only |
 
 **Every assertion is classified into exactly one of two trust classes:**
@@ -567,6 +612,14 @@ unevenly populated metafields, so scoping to a single product id hides facts hel
 listing. Scoping `peanut-butter-protein-bar` yields 22 quotable assertions against the 14 on that
 listing alone.
 
+**Identity fields are quotable but do not count as answers.** `title`, `vendor`, `product_type`
+and `handle` have to stay quotable, but they restate what a product *is* rather than assert a
+property of it, so `ProductAnswer.stated` drops them before any attribute or literal check.
+Without that, `deep-clean-freshening-tablets` produced a false pass on *how many tablets are in a
+box*: the literal check matched the product's own title, `Deep Clean + Freshening Tablets`, which
+says nothing about the count. A scoring bug that reports success is worse than one that reports
+failure.
+
 **Negation returns three states, never an empty list.** A scoped query cannot answer with "no
 rows": *declared free of X*, *declares, and does not list X*, and *no declaration at all* are
 three different facts, and reporting the third as the first is the same silent-empty failure the
@@ -582,7 +635,7 @@ commerce filter had. Only the first two are answerable.
 | `products` | store_id, shopify_product_id, handle, title, vendor, product_type, status, online_store_url, template_suffix |
 | `variants` | product_id, shopify_variant_id, title, sku, selected_options. **No price or inventory columns, by design** |
 | `field_assertions` | product_id, field, label, value, source, source_kind, rendered, trust_class, observed_at, source_updated_at, value_hash |
-| `template_constants` | store_id, template_key, value, label, value_hash, observed_at |
+| `template_constants` | store_id, template_key, **handle**, value, label, value_hash, observed_at. `handle` is empty for a constant shared across a template and set for a pair recovered from one product's page |
 | `documents` | product_id, chunk_key, **trust_class**, text, text_hash, embedding `vector(1024)`, tsv generated `tsvector` |
 | `edges` | store_id, from_type, from_id, relation, to_type, to_id, source |
 | `rejected_keys` | store_id, namespace, key, reason_code, detail |
@@ -611,9 +664,19 @@ EXISTS`, or a drop and rebuild.
 | `merge` | Field assertions and edges → Postgres |
 | `index` | Retrieval documents, embeddings → Postgres |
 | `search` | Query, with provenance and live price. `--exclude`, `--max-price`, `--in-stock` |
+| `facts` | Product-scoped answering — §5.7 |
 | `report` | Print the per-store profile report |
 | `eval` | Recall@5 against `questions.yaml`. `--compare-rerank` runs both arms |
+| `labels` | The distinct theme labels a store renders, for hand-authoring the reference set |
+| `compare-labels` | Score the `llm` label policy against that reference set |
+| `chat` | Grounded REPL. Answers cite assertion ids and every citation is verified |
+| `chat-replay` | The same answer function over the eval questions, scored for groundedness |
+| `seed-fixtures` | Load the committed skout page fixtures, so the pipeline runs with no token |
+| `stores` / `show-query` | Print the resolved config, and the Admin GraphQL query |
 | `run` | Chain `fetch-api` → `index` |
+
+`chat` and `chat-replay` are the only commands that call a model at answer time, and they are
+imported by the CLI alone — see §9.
 
 All accept `--store` (overriding `enabled`) and `--limit`.
 
@@ -695,21 +758,31 @@ the reference set itself marks `uncertain`.
 
 `--label-policy llm` remains off by default: a cached deterministic file is cheaper,
 auditable and reviewable, and 38 labels on two stores is not a basis for generalising. The
-result does strengthen the case for classification on a store nobody has read. See
-`docs/FINDINGS.md` §7.
+result does strengthen the case for classification on a store nobody has read. The per-label
+verdicts and the reasoning behind them are recorded in `config/spec_labels/*.yaml`, beside the
+labels they justify.
 
 **The chat layer is outside this boundary and stays there.** `chat.py` and `llm.py` make
 model calls, but they are imported by the CLI only and never by an ingest stage, so no
 pipeline stage gains a model dependency. Their purpose is to strengthen the evals by
-measuring groundedness, not to ship an assistant. See `docs/FINDINGS.md` §8.
+measuring groundedness, not to ship an assistant. `docs/PENDING.md` §3 carries the baseline and
+what is still open.
 
 ---
 
 ## 10. Open items
 
-Resolved items and their measured outcomes are in `docs/FINDINGS.md`. This section is the terse
-register of *whether* an item is open; `docs/PENDING.md` carries the evidence, the options and the
-tradeoffs for each, and is the document to read before picking one up.
+This section is the terse register of *whether* an item is open. `docs/PENDING.md` carries the
+evidence, the options and the tradeoffs for each, and is the document to read before picking one
+up.
+
+**Current measurements are not recorded here, or anywhere else.** They are printed by
+`poc report`, `poc eval` and `poc chat-replay` against the live database. A number written into a
+document is stale the moment anyone re-runs the pipeline. A separate findings document that tried
+to hold them was removed on 2026-08-25 for exactly that reason: it had been appended to run by run
+until its early sections contradicted its later ones, with nothing marking which were live. What survives in this document is the
+reasoning a run cannot reproduce: why a rule exists, what was tried and failed, and which
+publisher data is untrustworthy.
 
 What remains open:
 
@@ -722,9 +795,9 @@ What remains open:
       **Decide by measurement, not preference.** Run `eval --compare-rerank` on both stores.
       The metric's resolution is one question, so 0.03 on these question sets:
 
-      - **Delta below 0.03** — drop reranking from v0 and record the measurement in
-        `docs/FINDINGS.md`. Revisit when a store's catalogue is large enough for first-stage
-        recall to fail.
+      - **Delta below 0.03** — drop reranking from v0, record the decision in §3's register and
+        the measurement in `docs/PENDING.md` §2. Revisit when a store's catalogue is large enough
+        for first-stage recall to fail.
       - **Delta clearly positive** — keep a reranker, but reconsider the vendor. See below.
 
       Duplicate collapse (§5.6) changed what a reranker would be reordering: the top-5 now holds
@@ -785,8 +858,8 @@ What remains open:
       pair is a product specification or a storefront widget. remi's scoped answerability rose
       from 0.65 to 0.75 and skout holds 0.87. `Delivery Frequency` and `This item` are no
       longer quotable on skout; `Pack Size` and `Size` deliberately still are, by a product
-      decision recorded in `docs/PENDING.md` §1a. The LLM classifier was built, measured and left off by default — see §9's amendment
-      and `docs/FINDINGS.md` §7. Two consequences worth carrying forward, both in
+      decision recorded in `docs/PENDING.md` §1a. The LLM classifier was built, measured and
+      left off by default — see §9's amendment. Two consequences worth carrying forward, both in
       `docs/PENDING.md`: the reference sets are one reader's judgement on two stores, and
       whether a variant picker legitimately answers "how many come in a pack" is an unsettled
       product question rather than a defect.
@@ -797,7 +870,7 @@ What remains open:
       invalid citations across 42 turns**, which is the first evidence the quotable and
       retrieval tiers hold up in front of a model. skout is not yet measured, reasoning
       effort is hardcoded `low`, and re-scoring still costs model calls. See
-      `docs/PENDING.md` §3 and `docs/FINDINGS.md` §8.
+      `docs/PENDING.md` §3.
 
 - [ ] Whether a metafield write fires `products/update`. Irrelevant to v0, required before any
       incremental design.
@@ -860,3 +933,24 @@ Established empirically on 2026-08-21 and 2026-08-24, and re-confirmed against l
 - Metafield queries cost 5–14 units against a 20,000 bucket restoring at 1,000/s.
 - Block differencing on five skout pages: 430 blocks and 2,322 words reduce to 67 blocks and 664
   words at a 0.8 threshold, with the product region intact.
+- **remi holds zero free-from declarations** across all 30 published products, so every allergen
+  negation query there must correctly return nothing. skout can answer for 152 of 184; the other
+  30 are excluded from negation queries rather than admitted on absent evidence. This is why the
+  eval harness needs `expect_empty` — without it, "correctly refused" and "found nothing" are the
+  same result.
+- skout's live catalogue splits three ways: 58.2% buyable, 17.0% abandoned, 24.7% transient
+  stockout. remi is 100% buyable.
+- **Text-only contamination is real and partly ambiguous.** skout's `global.description_tag`
+  describes a different product on 19 of 145 values and `custom.short_description` on 9 of 91.
+  Both sit below the 25% rejection bar and are admitted with a review flag, because at low rates
+  flavour-family overlap and genuine cross-sell copy are indistinguishable from contamination.
+- **Two publisher-side data errors, worth raising with the merchant rather than coding around.**
+  remi pairs `Tank capacity:` with `Cordless and portable, no sink required` — the extraction is
+  faithful and the source is wrong. And remi titles a product
+  `Night Guard Cleaning + Teeth Whitening Foam (SALES DISCOUNT) $15`, which is the single quotable
+  value on either store containing a currency amount. No price *metafield* reaches a quotable
+  assertion; a merchant can still put a price in a name.
+- **A rich-text AST leak once inflated every coverage number.** Parsing `rich_text_field` put the
+  structural node names `root`, `paragraph` and `text` into the explained-token set, so coverage
+  read 20.2% and 10.3% where the honest figures were roughly half that. Coverage percentages
+  predating 2026-08-25 are not comparable to later ones.
