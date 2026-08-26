@@ -150,7 +150,9 @@ class ClassifierPolicy:
     gates_template_constants: bool = True
     client: Any = None
     model: str = CLASSIFIER_MODEL
-    _cache: dict[str, dict[str, str]] | None = None
+    # slug -> model -> label -> verdict. The model level is what lets a cache
+    # written by one classifier survive a model change.
+    _cache: dict[str, dict[str, dict[str, str]]] | None = None
     _dirty: set[str] | None = None
 
     def cache_path(self, store: StoreConfig) -> Path:
@@ -190,7 +192,7 @@ class ClassifierPolicy:
             label=label,
             examples="; ".join(e[:120] for e in examples[:3]) or "(none observed)",
         )
-        answer = llm.complete(self.client, self.model, prompt).lower()
+        answer = llm.complete(self.client, self.model, prompt).text.lower()
         for verdict in VERDICTS:
             if answer.startswith(verdict):
                 return verdict

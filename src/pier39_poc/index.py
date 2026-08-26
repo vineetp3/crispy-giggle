@@ -26,7 +26,9 @@ TRUST_CLASSES = ("quotable", "retrieval")
 
 def run(store: StoreConfig, force: bool = False) -> dict[str, Any]:
     embedder = Embedder(store.embedding_model, store.embedding_dimensions)
-    counts = {
+    # Not dict[str, int]: `embedding_stats` is a string and `looked_normalised`
+    # is a tri-state bool | None, both added after the counting is done.
+    counts: dict[str, Any] = {
         "products": 0,
         "documents": 0,
         "embedded": 0,
@@ -86,8 +88,11 @@ def run(store: StoreConfig, force: bool = False) -> dict[str, Any]:
 
         if pending:
             vectors = embedder.embed([p[3] for p in pending])
+            # strict: one vector per pending document, by construction. If that ever
+            # stops holding, truncating would silently store embeddings against the
+            # wrong documents -- a corrupt index that no test would notice.
             for (product_id, chunk_key, trust_class, text, text_hash), vector in zip(
-                pending, vectors
+                pending, vectors, strict=True
             ):
                 db.upsert_document(
                     conn, product_id, chunk_key, trust_class, text, text_hash, vector

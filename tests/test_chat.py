@@ -9,12 +9,10 @@ from __future__ import annotations
 
 from pier39_poc.chat import (
     CITATION_RE,
-    Citation,
     Turn,
     _fact_line,
     _render_facts,
     _verify,
-    replay,
 )
 
 QUOTABLE = [

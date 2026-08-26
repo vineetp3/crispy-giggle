@@ -60,7 +60,10 @@ def _attribute_table(profile: dict[str, Any]) -> Table | None:
     for name, entry in attributes.items():
         if name.startswith("_"):
             continue
-        sources = entry.get("sources") or []
+        # Filtered and coerced: `sources` comes from profile JSON, so a null or a
+        # non-string would otherwise reach join() and raise TypeError rather than
+        # render. Typing it concretely also makes SOURCE_STYLE.get return str.
+        sources: list[str] = [str(s) for s in (entry.get("sources") or []) if s]
         via = " + ".join(SOURCE_STYLE.get(s, s) for s in sources) or "[red]absent[/red]"
         evidence = (
             [f"{e['key']} (n={e['support']})" for e in entry.get("api") or []]

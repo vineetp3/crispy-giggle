@@ -98,6 +98,7 @@ class Turn:
     hits: list[Hit] = field(default_factory=list)
     diagnostics: Diagnostics | None = None
     error: str | None = None
+    request_shape: dict[str, Any] = field(default_factory=dict)
 
     @property
     def sentences(self) -> list[str]:
@@ -183,6 +184,7 @@ class Turn:
             "shown_retrieval_ids": [a.get("id") for a in self.shown_retrieval],
             "hits": [h.handle for h in self.hits],
             "question_yaml": self.to_question_yaml(),
+            "request_shape": self.request_shape,
             "error": self.error,
         }
 
@@ -318,9 +320,11 @@ def answer(
         diagnostics=diag,
     )
     try:
-        turn.text = llm.complete(
+        completion = llm.complete(
             llm.client_or_default(client), model, prompt, budget=1200
         )
+        turn.text = completion.text
+        turn.request_shape = completion.params
     except Exception as exc:
         turn.error = f"{type(exc).__name__}: {exc}"
         return turn

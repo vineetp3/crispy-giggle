@@ -12,12 +12,12 @@ from pathlib import Path
 import pytest
 
 from pier39_poc.blocks import (
-    repeated_block_profile,
     build_chrome_profile,
     extract_blocks,
     is_noise,
     label_for,
     product_region,
+    repeated_block_profile,
     visible_text,
 )
 

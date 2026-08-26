@@ -10,14 +10,18 @@ dependencies = [
     "httpx>=0.28",
     "psycopg[binary]>=3.2",
     "pgvector>=0.3",
-    "openai>=1.60",
-    "cohere>=5.13",
+    "openai>=2.20,<3",
     "crawl4ai>=0.4",
     "rich>=13.9",
+    "litellm>=1.63",
+    "ranx>=0.3.20",
+    "flashrank>=0.2.9",
+    "pydantic-settings>=2.7",
+    "tenacity>=9.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3"]
+dev = ["pytest>=8.3", "ruff>=0.9"]
 
 [project.scripts]
 poc = "pier39_poc.cli:app"
@@ -31,3 +35,30 @@ packages = ["src/pier39_poc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+
+[tool.pyright]
+# Without venvPath/venv, an editor launched from a shell with another project's
+# VIRTUAL_ENV active resolves imports against that venv and reports every
+# dependency here as missing. Pinning it makes the IDE agree with `uv run`.
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
+exclude = [".venv", ".claude", "**/__pycache__"]
+
+[[tool.pyright.executionEnvironments]]
+# Tests pass small duck-typed fakes (FakeHit, FakeStore, StubClient) where the
+# real dataclasses are declared. That is deliberate -- the fakes carry only the
+# fields under test -- so structural mismatches here are not defects.
+root = "tests"
+reportArgumentType = "none"
+reportAttributeAccessIssue = "none"
+reportOperatorIssue = "none"

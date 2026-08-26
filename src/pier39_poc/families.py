@@ -28,7 +28,8 @@ being monotonic in rrf, which reads as a ranking bug.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 _PACK_SUFFIX_RE = re.compile(
     r"\s*[-‐-―]\s*(bundle|\d+\s*pack|pack of \d+)\b.*$", re.IGNORECASE

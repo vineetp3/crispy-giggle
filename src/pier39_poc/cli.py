@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Optional
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -12,8 +12,8 @@ from rich.table import Table
 
 from . import chat as chat_stage
 from . import db, evaluate
-from . import labels as labels_stage
 from . import index as index_stage
+from . import labels as labels_stage
 from . import merge as merge_stage
 from . import profile as profile_stage
 from . import report as report_stage
@@ -26,13 +26,13 @@ app = typer.Typer(add_completion=False, help="Shopify catalogue ingestion feasib
 console = Console()
 
 
-def _stores(only: Optional[str]) -> list[StoreConfig]:
+def _stores(only: str | None) -> list[StoreConfig]:
     load_env()
     try:
         stores = load_stores(only=only)
     except ConfigError as exc:
         console.print(f"[red]config error:[/red] {exc}")
-        raise typer.Exit(2)
+        raise typer.Exit(2) from exc
     if not stores:
         console.print("[yellow]no enabled stores selected[/yellow]")
         raise typer.Exit(1)
@@ -52,7 +52,7 @@ def show_query() -> None:
 
 
 @app.command("stores")
-def list_stores(store: Optional[str] = typer.Option(None, "--store")) -> None:
+def list_stores(store: str | None = typer.Option(None, "--store")) -> None:
     table = Table(title="stores")
     for column in ("slug", "domain", "scope", "profile_pages", "fetch", "threshold"):
         table.add_column(column)
@@ -66,15 +66,15 @@ def list_stores(store: Optional[str] = typer.Option(None, "--store")) -> None:
 
 @app.command("fetch-api")
 def fetch_api(
-    store: Optional[str] = typer.Option(None, "--store"),
-    limit: Optional[int] = typer.Option(None, "--limit", help="stop after N products"),
+    store: str | None = typer.Option(None, "--store"),
+    limit: int | None = typer.Option(None, "--limit", help="stop after N products"),
 ) -> None:
     for cfg in _stores(store):
         try:
             token = token_for(cfg.slug)
         except ConfigError as exc:
             console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(2)
+            raise typer.Exit(2) from exc
 
         console.print(f"[bold]{cfg.slug}[/bold]: fetching from {cfg.graphql_url()}")
         try:
@@ -90,7 +90,7 @@ def fetch_api(
                 )
         except ShopifyError as exc:
             console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from exc
 
         for product in products:
             product["sellable"] = sellable.get(str(product["product_id"]), False)
@@ -134,8 +134,8 @@ def fetch_api(
 
 @app.command("fetch-html")
 def fetch_html(
-    store: Optional[str] = typer.Option(None, "--store"),
-    limit: Optional[int] = typer.Option(None, "--limit"),
+    store: str | None = typer.Option(None, "--store"),
+    limit: int | None = typer.Option(None, "--limit"),
 ) -> None:
     from .artifacts import load_products
 
@@ -168,7 +168,7 @@ def fetch_html(
 
 
 @app.command("profile")
-def profile_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
+def profile_cmd(store: str | None = typer.Option(None, "--store")) -> None:
     for cfg in _stores(store):
         payload = profile_stage.build_profile(cfg)
         coverage = (payload.get("coverage") or {}).get("coverage_pct")
@@ -181,7 +181,7 @@ def profile_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
 
 @app.command("merge")
 def merge_cmd(
-    store: Optional[str] = typer.Option(None, "--store"),
+    store: str | None = typer.Option(None, "--store"),
     label_policy: str = typer.Option(
         "static",
         "--label-policy",
@@ -193,7 +193,7 @@ def merge_cmd(
             policy = labels_stage.get_policy(label_policy)
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(2)
+            raise typer.Exit(2) from exc
         counts = merge_stage.run(cfg, policy)
         console.print(
             f"[bold]{cfg.slug}[/bold]: {counts['products']} products, "
@@ -210,7 +210,7 @@ def merge_cmd(
 
 @app.command("index")
 def index_cmd(
-    store: Optional[str] = typer.Option(None, "--store"),
+    store: str | None = typer.Option(None, "--store"),
     force: bool = typer.Option(False, "--force", help="re-embed unchanged documents"),
 ) -> None:
     for cfg in _stores(store):
@@ -225,12 +225,12 @@ def index_cmd(
 @app.command("search")
 def search_cmd(
     query: str = typer.Argument(...),
-    store: Optional[str] = typer.Option(None, "--store"),
+    store: str | None = typer.Option(None, "--store"),
     top_k: int = typer.Option(5, "--top-k"),
-    exclude: Optional[str] = typer.Option(None, "--exclude", help="comma-separated terms"),
+    exclude: str | None = typer.Option(None, "--exclude", help="comma-separated terms"),
     no_rerank: bool = typer.Option(False, "--no-rerank"),
     no_live: bool = typer.Option(False, "--no-live", help="skip the live price call"),
-    max_price: Optional[float] = typer.Option(
+    max_price: float | None = typer.Option(
         None, "--max-price", help="applied to live price, not a stored column"
     ),
     in_stock: bool = typer.Option(False, "--in-stock", help="live availability only"),
@@ -238,12 +238,14 @@ def search_cmd(
         False, "--no-group", help="do not collapse duplicate listings of one product"
     ),
 ) -> None:
-    from .search import Diagnostics, search
+    from .search import Diagnostics, prepare_rerank, search
 
     stores = _stores(store)
     cfg = stores[0]
     slug = cfg.slug if store else None
     terms = [t.strip() for t in (exclude or "").split(",") if t.strip()]
+    if not no_rerank:
+        prepare_rerank(cfg.rerank_model)
 
     diag = Diagnostics()
     hits = search(
@@ -311,10 +313,10 @@ def _print_diagnostics(diag, filtered: bool) -> None:
 @app.command("facts")
 def facts_cmd(
     handle: str = typer.Argument(..., help="product handle; scope expands to its family"),
-    store: Optional[str] = typer.Option(None, "--store"),
-    exclude: Optional[str] = typer.Option(None, "--exclude", help="comma-separated terms"),
+    store: str | None = typer.Option(None, "--store"),
+    exclude: str | None = typer.Option(None, "--exclude", help="comma-separated terms"),
     no_live: bool = typer.Option(False, "--no-live"),
-    attribute: Optional[str] = typer.Option(None, "--attribute", help="check one attribute"),
+    attribute: str | None = typer.Option(None, "--attribute", help="check one attribute"),
 ) -> None:
     from .answering import ProductNotFound, answer_for_product
     from .attributes import ATTRIBUTES
@@ -329,7 +331,7 @@ def facts_cmd(
         )
     except ProductNotFound as exc:
         console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
 
     _print_diagnostics(diag, filtered=False)
     console.print(f"[bold]{answer.title}[/bold]  [dim]{answer.store_slug}/{answer.handle}[/dim]")
@@ -370,22 +372,26 @@ def facts_cmd(
 
 
 @app.command("report")
-def report_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
+def report_cmd(store: str | None = typer.Option(None, "--store")) -> None:
     for cfg in _stores(store):
         report_stage.render(cfg)
 
 
 @app.command("eval")
 def eval_cmd(
-    store: Optional[str] = typer.Option(None, "--store"),
+    store: str | None = typer.Option(None, "--store"),
     top_k: int = typer.Option(5, "--top-k"),
     no_rerank: bool = typer.Option(False, "--no-rerank"),
     compare_rerank: bool = typer.Option(
         False, "--compare-rerank", help="run with and without the cross-encoder"
     ),
 ) -> None:
+    from .search import prepare_rerank
+
     results = {}
     for cfg in _stores(store):
+        if compare_rerank or not no_rerank:
+            prepare_rerank(cfg.rerank_model)
         if compare_rerank:
             results[cfg.slug] = evaluate.compare(cfg, top_k=top_k)["with_rerank"]
         else:
@@ -403,7 +409,7 @@ def eval_cmd(
 
 @app.command("labels")
 def labels_cmd(
-    store: Optional[str] = typer.Option(None, "--store"),
+    store: str | None = typer.Option(None, "--store"),
     as_yaml: bool = typer.Option(False, "--yaml", help="emit a reference-set skeleton"),
 ) -> None:
     for cfg in _stores(store):
@@ -457,7 +463,7 @@ def labels_cmd(
 
 
 @app.command("compare-labels")
-def compare_labels_cmd(store: Optional[str] = typer.Option(None, "--store")) -> None:
+def compare_labels_cmd(store: str | None = typer.Option(None, "--store")) -> None:
     """Score the llm label policy against the hand-authored reference set."""
     for cfg in _stores(store):
         profile = read_json(cfg.profile_path)
@@ -611,8 +617,8 @@ def _render_turn(turn, show_facts: bool, show_diag: bool) -> None:
 
 @app.command("chat")
 def chat_cmd(
-    store: Optional[str] = typer.Option(None, "--store"),
-    product: Optional[str] = typer.Option(None, "--product", help="hold a product in scope"),
+    store: str | None = typer.Option(None, "--store"),
+    product: str | None = typer.Option(None, "--product", help="hold a product in scope"),
     top_k: int = typer.Option(5, "--top-k"),
     live: bool = typer.Option(False, "--live", help="read live price and stock per turn"),
     show_facts: bool = typer.Option(True, "--facts/--no-facts"),
@@ -661,10 +667,10 @@ def chat_cmd(
 
 @app.command("chat-replay")
 def chat_replay_cmd(
-    store: Optional[str] = typer.Option(None, "--store"),
+    store: str | None = typer.Option(None, "--store"),
     top_k: int = typer.Option(5, "--top-k"),
     model: str = typer.Option(chat_stage.CHAT_MODEL, "--model"),
-    limit: Optional[int] = typer.Option(None, "--limit"),
+    limit: int | None = typer.Option(None, "--limit"),
 ) -> None:
     """Run the eval question set through the SAME answer function and score groundedness."""
     for cfg in _stores(store):
@@ -722,7 +728,15 @@ def seed_fixtures() -> None:
     from .config import REPO_ROOT
 
     sys.path.insert(0, str(REPO_ROOT / "tests"))
-    from test_profile import DESCRIPTION, FIXTURES, HANDLES, IDS, _metafields
+    # tests/ is not an installed package; the fixtures are reached via the sys.path
+    # insert on the line above, which static resolution cannot follow.
+    from test_profile import (  # pyright: ignore[reportMissingImports]
+        DESCRIPTION,
+        FIXTURES,
+        HANDLES,
+        IDS,
+        _metafields,
+    )
 
     load_env()
     cfg = load_stores(only="skout")[0]
@@ -768,8 +782,8 @@ def seed_fixtures() -> None:
 
 @app.command("run")
 def run_all(
-    store: Optional[str] = typer.Option(None, "--store"),
-    limit: Optional[int] = typer.Option(None, "--limit"),
+    store: str | None = typer.Option(None, "--store"),
+    limit: int | None = typer.Option(None, "--limit"),
 ) -> None:
     init_db()
     fetch_api(store=store, limit=limit)

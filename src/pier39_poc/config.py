@@ -2,18 +2,28 @@
 
 Secrets never appear in stores.yaml. Tokens come from a single JSON blob keyed by
 store slug, so adding a store is a config edit and a token edit, nothing more.
+
+`StoreConfig` is a pydantic model, so the rules in `_check` run at construction rather
+than on a separate validation call. They still raise `ConfigError`, not pydantic's
+`ValidationError`: pydantic propagates non-`ValueError` exceptions from validators
+untouched, which keeps the CLI's error path and every message identical.
+
+`DATA_ROOT` stays a module-level global that the path properties dereference at
+access time. Tests monkeypatch it (`tests/test_profile.py`), so resolving it eagerly
+at construction would silently redirect writes into the real `data/` tree.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 from dotenv import load_dotenv
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = REPO_ROOT / "config" / "stores.yaml"
@@ -31,8 +41,9 @@ class ConfigError(RuntimeError):
     pass
 
 
-@dataclass
-class StoreConfig:
+class StoreConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=False)
+
     slug: str
     domain: str
     enabled: bool = True
@@ -45,7 +56,7 @@ class StoreConfig:
 
     sampling: str = "by_template"
     sampling_seed: int = 1739
-    explicit_handles: list[str] = field(default_factory=list)
+    explicit_handles: list[str] = Field(default_factory=list)
 
     fetch_profile: str = "plain"
     concurrency: int = 4
@@ -58,17 +69,18 @@ class StoreConfig:
     allowlist_min_support: int = 3
     allowlist_min_hit_rate: float = 0.8
 
-    spec_label_allow: list[str] = field(default_factory=list)
-    spec_label_deny: list[str] = field(default_factory=list)
+    spec_label_allow: list[str] = Field(default_factory=list)
+    spec_label_deny: list[str] = Field(default_factory=list)
 
     storefront_api_version: str = "2026-01"
     market_country: str = "US"
 
     embedding_model: str = "text-embedding-3-large"
     embedding_dimensions: int = 1024
-    rerank_model: str = "rerank-v4.0-fast"
+    rerank_model: str = "ms-marco-MiniLM-L-12-v2"
 
-    def validate(self) -> None:
+    @model_validator(mode="after")
+    def _check(self) -> StoreConfig:
         if self.crawl_scope not in CRAWL_SCOPES:
             raise ConfigError(f"{self.slug}: crawl_scope must be one of {CRAWL_SCOPES}")
         if self.sampling not in SAMPLING_MODES:
@@ -88,6 +100,7 @@ class StoreConfig:
             raise ConfigError(
                 f"{self.slug}: profile_pages below 5 makes differencing unreliable"
             )
+        return self
 
     @property
     def data_dir(self) -> Path:
@@ -123,7 +136,7 @@ class StoreConfig:
         return f"https://{self.domain}/api/{self.storefront_api_version}/graphql.json"
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return self.model_dump()
 
 
 def load_env() -> None:
@@ -143,7 +156,7 @@ def load_stores(
     if not entries:
         raise ConfigError(f"no stores defined in {path}")
 
-    known = set(StoreConfig.__dataclass_fields__)
+    known = set(StoreConfig.model_fields)
     out: list[StoreConfig] = []
     for entry in entries:
         merged = {**defaults, **entry}
@@ -153,9 +166,8 @@ def load_stores(
         if "delay_seconds" in merged and merged["delay_seconds"] is not None:
             lo, hi = merged["delay_seconds"]
             merged["delay_seconds"] = (float(lo), float(hi))
-        store = StoreConfig(**merged)
-        store.validate()
-        out.append(store)
+        # Construction validates; see the module docstring.
+        out.append(StoreConfig(**merged))
 
     if only:
         wanted = {s.strip() for s in only.split(",") if s.strip()}
@@ -167,18 +179,50 @@ def load_stores(
     return [s for s in out if s.enabled]
 
 
+DEFAULT_DATABASE_URL = "postgresql://pier39:pier39@localhost:5433/discovery"
+
+
+class Secrets(BaseSettings):
+    """Secrets read from the process environment.
+
+    Deliberately no `env_file`: `load_env()` is what puts `.env` into `os.environ`, and
+    reading the file here as well would resolve secrets that the old `os.environ.get`
+    path would have missed. Instantiated per call so a later `load_env()` is still seen.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=True)
+
+    shopify_tokens: str | None = Field(default=None, validation_alias=TOKENS_ENV)
+    storefront_tokens: str | None = Field(
+        default=None, validation_alias=STOREFRONT_TOKENS_ENV
+    )
+    database_url: str = Field(
+        default=DEFAULT_DATABASE_URL, validation_alias="DATABASE_URL"
+    )
+
+
+def _token_map(blob: str, env_name: str, strict: bool) -> dict[str, Any] | None:
+    try:
+        tokens = json.loads(blob)
+    except ValueError as exc:
+        if not strict:
+            return None
+        raise ConfigError(f"{env_name} is not valid JSON: {exc}") from exc
+    if not isinstance(tokens, dict):
+        if not strict:
+            return None
+        raise ConfigError(f"{env_name} must be a JSON object keyed by store slug")
+    return tokens
+
+
 def token_for(slug: str) -> str:
-    blob = os.environ.get(TOKENS_ENV)
+    blob = Secrets().shopify_tokens
     if not blob:
         raise ConfigError(
             f"{TOKENS_ENV} is not set. Copy .env.example to .env and fill it in."
         )
-    try:
-        tokens = json.loads(blob)
-    except ValueError as exc:
-        raise ConfigError(f"{TOKENS_ENV} is not valid JSON: {exc}") from exc
-    if not isinstance(tokens, dict):
-        raise ConfigError(f"{TOKENS_ENV} must be a JSON object keyed by store slug")
+    tokens = _token_map(blob, TOKENS_ENV, strict=True)
+    assert tokens is not None
     token = tokens.get(slug)
     if not token:
         raise ConfigError(
@@ -189,14 +233,11 @@ def token_for(slug: str) -> str:
 
 
 def storefront_token_for(slug: str) -> str | None:
-    blob = os.environ.get(STOREFRONT_TOKENS_ENV)
+    blob = Secrets().storefront_tokens
     if not blob:
         return None
-    try:
-        tokens = json.loads(blob)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(tokens, dict):
+    tokens = _token_map(blob, STOREFRONT_TOKENS_ENV, strict=False)
+    if tokens is None:
         return None
     token = tokens.get(slug)
     return token if isinstance(token, str) and token else None
@@ -210,6 +251,4 @@ def require_env(name: str) -> str:
 
 
 def database_url() -> str:
-    return os.environ.get(
-        "DATABASE_URL", "postgresql://pier39:pier39@localhost:5433/discovery"
-    )
+    return Secrets().database_url

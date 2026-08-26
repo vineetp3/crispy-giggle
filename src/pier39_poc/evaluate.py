@@ -30,7 +30,10 @@ catalogue-wide search.
 
 Recall at n=10 has a standard error near 0.15, so 0.70 is indistinguishable from 0.55.
 The question sets are sized to make the number mean something, and `compare` exists
-because a reranker whose effect is smaller than the metric's resolution is unfalsifiable.
+because a reranker's effect has to be measured rather than assumed. It is decided by a
+paired t-test over the two arms (ranx), not by asking whether the delta clears one
+question's worth of the metric -- that older rule could not tell a small real effect
+from noise, nor say whether the same questions moved.
 """
 
 from __future__ import annotations
@@ -42,8 +45,8 @@ from rich.console import Console
 from rich.table import Table
 
 from . import db
-from .config import REPO_ROOT, StoreConfig
 from .answering import ProductNotFound, answer_for_product
+from .config import REPO_ROOT, StoreConfig
 from .matching import FREE_FROM_FIELD
 from .search import search
 
@@ -211,10 +214,101 @@ def _evaluate_one(
         "violations": unsafe,
         "relevant": bool(expected) and any(h in expected for h in listed),
         "has_expectation": bool(expected),
+        "expected": sorted(expected),
+        "listed": listed,
         "top": handles[0] if handles else None,
         "returned": len(handles),
         "reranked": reranked,
     }
+
+
+
+RELEVANCE_METRIC = "hit_rate@{k}"
+
+
+def _ir_outcomes(outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Only the outcomes that are an IR task: a question that named handles.
+
+    Scoped outcomes also carry `has_expectation`, but they ask whether a fact is
+    quotable on a product the question already named -- there is no ranking and no
+    relevant-document set, so they are scored as they always were and never reach ranx.
+    """
+    return [o for o in outcomes if o.get("expected")]
+
+
+def _ir_pair(outcomes: list[dict[str, Any]], top_k: int) -> tuple[dict, dict]:
+    """`(qrels, run)` for ranx, from the outcomes the harness already produced.
+
+    The metric is `hit_rate@k`, not `recall@k`. This harness has always scored a
+    discovery question as satisfied when ANY named handle comes back -- several
+    questions name up to five interchangeable products, and finding one is the whole
+    expectation. `recall@k` would divide by the number named and score 1-of-3 as 0.33,
+    silently redefining the measurement. `hit_rate@k` is what the hand-computed
+    `relevance` has always been.
+
+    `listed` carries family siblings as well as the hits themselves, because a collapsed
+    duplicate listing still counts as surfacing the product. It is NOT re-truncated to
+    `top_k`: `search` already returned only `top_k` hits, and the siblings hang off those
+    hits rather than occupying ranks of their own. Cutting the list again would discard
+    sibling matches the harness has always counted. Positions are scored by descending
+    rank so ranx sees the order the shopper saw.
+    """
+    qrels: dict[str, dict[str, int]] = {}
+    run: dict[str, dict[str, float]] = {}
+    for i, outcome in enumerate(_ir_outcomes(outcomes)):
+        qid = f"q{i}"
+        qrels[qid] = {h: 1 for h in outcome["expected"]}
+        listed = list(outcome.get("listed") or [])
+        scores = {h: float(len(listed) - n) for n, h in enumerate(listed)}
+        # ranx rejects a query with no retrieved documents; an empty result set is a
+        # real outcome here, so it is represented by a document that matches nothing.
+        run[qid] = scores or {"__none__": 0.0}
+    return qrels, run
+
+
+def ir_relevance(outcomes: list[dict[str, Any]], top_k: int) -> float | None:
+    """`relevance@k` over the handle-naming questions, via ranx."""
+    qrels, run = _ir_pair(outcomes, top_k)
+    if not qrels:
+        return None
+    import warnings
+
+    from ranx import Qrels, Run
+    from ranx import evaluate as ranx_evaluate
+
+    # k spans the whole candidate list: the top_k cut happened in `search`, and a
+    # smaller k here would re-truncate collapsed siblings out of the measurement.
+    k = max((len(docs) for docs in run.values()), default=top_k) or top_k
+    with warnings.catch_warnings():
+        # ranx's numba kernels warn about a uint64->int64 cast on every call. It is
+        # internal to the metric and says nothing about this harness's data.
+        warnings.simplefilter("ignore")
+        metric = RELEVANCE_METRIC.format(k=k)
+        # One metric in, one score out. ranx returns a {metric: score} dict only when
+        # asked for several, so unwrap defensively rather than assume the scalar.
+        scored = ranx_evaluate(Qrels(qrels), Run(run), metric)
+    if isinstance(scored, dict):
+        return float(scored[metric])
+    return float(scored)
+
+
+def blended_relevance(outcomes: list[dict[str, Any]], top_k: int) -> tuple[float, int, int]:
+    """The reported `relevance@k`: ranx for the ranked half, as-scored for the rest.
+
+    Returns `(rate, relevant, scored)`. The two halves are combined by count rather
+    than averaged, which is what the hand-computed figure has always been.
+    """
+    scored = [o for o in outcomes if o["has_expectation"]]
+    if not scored:
+        return 0.0, 0, 0
+    ranked = _ir_outcomes(outcomes)
+    ir_value = ir_relevance(outcomes, top_k)
+    ir_hits = int(round((ir_value or 0.0) * len(ranked)))
+    other_hits = sum(
+        1 for o in scored if not o.get("expected") and o["relevant"]
+    )
+    relevant = ir_hits + other_hits
+    return relevant / len(scored), relevant, len(scored)
 
 
 def run(store: StoreConfig, top_k: int = 5, rerank: bool = True, quiet: bool = False) -> dict[str, Any]:
@@ -232,10 +326,7 @@ def run(store: StoreConfig, top_k: int = 5, rerank: bool = True, quiet: bool = F
     reranked_any = any(o["reranked"] for o in outcomes)
     discovery_outcomes = [o for o in outcomes if o.get("mode") != "scoped"]
     scoped_outcomes = [o for o in outcomes if o.get("mode") == "scoped"]
-    scored = [o for o in outcomes if o["has_expectation"]]
-    relevance = (
-        sum(1 for o in scored if o["relevant"]) / len(scored) if scored else 0.0
-    )
+    relevance, relevant_count, scored_count = blended_relevance(outcomes, top_k)
 
     per_kind: dict[str, list[bool]] = {}
     for outcome in outcomes:
@@ -281,7 +372,7 @@ def run(store: StoreConfig, top_k: int = 5, rerank: bool = True, quiet: bool = F
         console.print(
             f"relevance@{top_k} (expected handle in results, where one was named): "
             f"[bold]{relevance:.2f}[/bold] "
-            f"({sum(1 for o in scored if o['relevant'])}/{len(scored)})"
+            f"({relevant_count}/{scored_count})"
         )
         for kind, results in sorted(per_kind.items()):
             rate = sum(results) / len(results)
@@ -304,7 +395,7 @@ def run(store: StoreConfig, top_k: int = 5, rerank: bool = True, quiet: bool = F
         if rerank and not reranked_any:
             console.print(
                 "[red]the reranker did not run[/red] -- `search._rerank` degrades to the "
-                "fused order on any exception, so a bad COHERE_API_KEY looks exactly like "
+                "fused order on any exception, so a failed rerank looks exactly like "
                 "a reranker that changed nothing. These numbers are RRF only."
             )
 
@@ -328,9 +419,68 @@ def run(store: StoreConfig, top_k: int = 5, rerank: bool = True, quiet: bool = F
         "reranked": reranked_any,
         "hits": hits,
         "total": len(outcomes),
+        "outcomes": outcomes,
         "violations": sum(len(o["violations"]) for o in outcomes),
         "violating_questions": len(violating),
         "by_kind": {k: sum(v) / len(v) for k, v in per_kind.items()},
+    }
+
+
+
+SIGNIFICANCE_MAX_P = 0.05
+
+
+def rerank_significance(
+    with_outcomes: list[dict[str, Any]],
+    without_outcomes: list[dict[str, Any]],
+    top_k: int,
+    max_p: float = SIGNIFICANCE_MAX_P,
+) -> dict[str, Any] | None:
+    """Paired t-test over the two arms, on the questions that name handles.
+
+    Replaces the old `resolution = 1 / n` rule, which asked whether a delta cleared
+    one question's worth of the metric. That is a question-count heuristic, not a test:
+    it cannot separate a real small effect from noise, and it says nothing about whether
+    the same questions moved. ranx pairs the arms per query and reports a p-value plus
+    win/tie/loss, so DESIGN.md 10's "is the reranker worth keeping" is decided rather
+    than eyeballed. A NaN p-value means the arms scored identically on every query.
+    """
+    qrels_map, run_with = _ir_pair(with_outcomes, top_k)
+    _, run_without = _ir_pair(without_outcomes, top_k)
+    if not qrels_map or set(run_with) != set(run_without):
+        return None
+
+    import warnings
+
+    from ranx import Qrels, Run
+    from ranx import compare as ranx_compare
+
+    k = max((len(d) for d in run_with.values()), default=top_k) or top_k
+    metric = RELEVANCE_METRIC.format(k=k)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        report = ranx_compare(
+            Qrels(qrels_map),
+            runs=[
+                Run(run_with, name="with_rerank"),
+                Run(run_without, name="without_rerank"),
+            ],
+            metrics=[metric],
+            max_p=max_p,
+        ).to_dict()
+
+    with_side = report.get("with_rerank", {})
+    p_value = with_side.get("comparisons", {}).get("without_rerank", {}).get(metric)
+    wtl = with_side.get("win_tie_loss", {}).get("without_rerank", {}).get(metric, {})
+    return {
+        "metric": metric,
+        "p_value": p_value,
+        "max_p": max_p,
+        "wins": wtl.get("W", 0),
+        "ties": wtl.get("T", 0),
+        "losses": wtl.get("L", 0),
+        "with_score": with_side.get("scores", {}).get(metric),
+        "without_score": report.get("without_rerank", {}).get("scores", {}).get(metric),
     }
 
 
@@ -339,7 +489,6 @@ def compare(store: StoreConfig, top_k: int = 5) -> dict[str, Any]:
     with_rerank = run(store, top_k=top_k, rerank=True, quiet=True)
     without = run(store, top_k=top_k, rerank=False, quiet=True)
     delta = with_rerank["recall"] - without["recall"]
-    resolution = 1.0 / with_rerank["total"] if with_rerank["total"] else 1.0
 
     table = Table(title=f"rerank A/B: {store.slug} (recall@{top_k})")
     table.add_column("configuration")
@@ -359,17 +508,60 @@ def compare(store: StoreConfig, top_k: int = 5) -> dict[str, Any]:
         console.print(
             "[red]INVALID COMPARISON: the reranker never executed[/red] -- both arms are "
             "RRF only, so the delta below is structurally zero and measures nothing. "
-            "`search._rerank` swallows every exception; check COHERE_API_KEY."
+            "`search._rerank` swallows every exception; check `rerank_model` names a checkpoint flashrank can fetch."
         )
         return {"with_rerank": with_rerank, "without_rerank": without, "delta": None}
 
-    verdict = (
-        "below the metric's resolution -- not measurable at this question count"
-        if abs(delta) < resolution
-        else ("helps" if delta > 0 else "hurts")
+    sig = rerank_significance(
+        with_rerank.get("outcomes") or [], without.get("outcomes") or [], top_k
     )
+    console.print(f"delta (combined): [bold]{delta:+.3f}[/bold]")
+
+    if sig is None:
+        console.print(
+            "[yellow]no ranked questions to test[/yellow] -- every question is scoped, "
+            "so there is no ordering for a reranker to change."
+        )
+        return {
+            "with_rerank": with_rerank,
+            "without_rerank": without,
+            "delta": delta,
+            "significance": None,
+        }
+
+    p_value = sig["p_value"]
+    unmoved = sig["wins"] == 0 and sig["losses"] == 0
     console.print(
-        f"delta: [bold]{delta:+.3f}[/bold] against a resolution of {resolution:.3f} "
-        f"(1 question) -- {verdict}"
+        f"{sig['metric']}: with {sig['with_score']:.3f} vs without "
+        f"{sig['without_score']:.3f} -- "
+        f"{sig['wins']}W / {sig['ties']}T / {sig['losses']}L"
     )
-    return {"with_rerank": with_rerank, "without_rerank": without, "delta": delta}
+
+    if unmoved:
+        console.print(
+            "[yellow]the reranker changed no question's outcome[/yellow] -- it ran, and "
+            "every query scored the same in both arms. No paired test can separate "
+            "these; on DESIGN.md 10's rule the reranker is not earning its place."
+        )
+    elif p_value is None or p_value != p_value:  # NaN
+        console.print(
+            f"[yellow]no usable p-value[/yellow] at max_p={sig['max_p']} -- "
+            "treat the delta as unmeasured."
+        )
+    elif p_value <= sig["max_p"]:
+        console.print(
+            f"[green]significant[/green]: paired t-test p={p_value:.4f} "
+            f"<= {sig['max_p']} -- the reranker {'helps' if delta >= 0 else 'hurts'}."
+        )
+    else:
+        console.print(
+            f"[yellow]not significant[/yellow]: paired t-test p={p_value:.4f} "
+            f"> {sig['max_p']} -- the difference is noise at this question count."
+        )
+
+    return {
+        "with_rerank": with_rerank,
+        "without_rerank": without,
+        "delta": delta,
+        "significance": sig,
+    }

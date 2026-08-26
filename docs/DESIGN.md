@@ -68,7 +68,7 @@ stay in force until that rule produces a number.
 | Crawler | Crawl4AI (Apache 2.0) | |
 | Boilerplate removal | Cross-page block frequency differencing | Not Trafilatura. Article extractors discard `label: value` spec blocks |
 | Embeddings | OpenAI `text-embedding-3-large`, `dimensions=1024` | Sticky: the pgvector column is `vector(1024)`; changing it means a migration plus full re-embed |
-| Reranking | Cohere Rerank 4.0, **in v0** | Promoted from optional because OpenAI has no `input_type`, so the cross-encoder carries the asymmetry. **Contested — see §10.** Promoted on theory; the reranker has never executed, and measured recall without it is 0.79 and 0.97 |
+| Reranking | Local ONNX cross-encoder; **not earning its place in v0** | Originally a hosted reranker promoted on theory and marked contested. Settled by measurement on 2026-08-26 under §10's rule: the A/B executed for the first time and the delta fell below the metric's resolution on both stores. `_rerank` runs `flashrank` in-process, so no query path depends on a vendor account and the arm stays re-measurable rather than removed. Measurement in `docs/PENDING.md` §2 |
 | LLM extraction | Not in v0 | remi's theme block is entered by hand |
 | Edges | Table included and populated in v0 | Not traversed by search yet |
 | Eval harness | In v0 | |
@@ -148,14 +148,14 @@ A single JSON blob, keyed by store slug:
 PIER39_SHOPIFY_TOKENS={"skout":"shpat_...","remi":"shpat_..."}
 PIER39_SHOPIFY_STOREFRONT_TOKENS={"skout":"...","remi":"..."}
 OPENAI_API_KEY=...
-COHERE_API_KEY=...
 DATABASE_URL=postgresql://pier39:pier39@localhost:5433/discovery
 ```
 
 `PIER39_SHOPIFY_STOREFRONT_TOKENS` is optional. Without it the answer-time commerce read falls
 back to the Admin API, which has no market context and shares the ingestion rate-limit bucket.
-`COHERE_API_KEY` is optional and `search` degrades to the fused order without it; that
-degradation is silent, so `eval --compare-rerank` reports when the reranker did not execute.
+Reranking needs no credential: it runs a local ONNX cross-encoder in-process. It still
+degrades to the fused order on failure, and that degradation is silent, so
+`eval --compare-rerank` reports when the reranker did not execute.
 
 `.env` is gitignored. `config/stores.yaml` contains no secrets and no domains-to-token mapping.
 
@@ -569,7 +569,8 @@ Seven stages.
 6. Apply commerce constraints (price ceiling, in stock) to the live values. This must
    happen before the rerank, so the cross-encoder is not spent on results about to be
    dropped. A hit whose live read returned nothing fails the filter.
-7. Rerank the survivors with Cohere Rerank 4.0 down to 5.
+7. Rerank the survivors down to 5, with the local ONNX cross-encoder named by
+   `rerank_model`. Measured as not earning its place — §3.
 
 The first stage retrieves 200 per leg rather than 50, because a post-retrieval commerce
 filter can empty a shallow pool; the live read is bounded to the top 60 of the fused
@@ -584,8 +585,11 @@ and source date, and the live price.
 exceptions — degrading beats erroring on a shopper query — but both now record the failure on a
 `Diagnostics` the CLI prints. This matters most under a price filter: stage 6 rejects any hit
 with no live read, so a dead credential turns `--max-price` into an empty result set that reads
-as "nothing matches" rather than "the price lookup died". A placeholder `COHERE_API_KEY` hid
-behind the same pattern across every run on 2026-08-25.
+as "nothing matches" rather than "the price lookup died". Reranking hid behind the same pattern
+across every run up to 2026-08-25: it was hosted, its credential was never set, and because
+`rerank` defaults to `True` it was called on every search and failed every time — the fused order
+it fell back to was indistinguishable from a reranker that changed nothing. Running the model
+in-process removes the credential from the failure surface entirely.
 
 Quotable facts are rendered with the date their source was last updated. Nothing expires — see
 §10 — but a three-year-old allergen declaration should be visibly three years old.
@@ -721,8 +725,11 @@ holds no free-from declarations, so its negation queries must return nothing, an
 the harness cannot tell "correctly refused" from "found nothing".
 
 `search._rerank` degrades to the fused order on any exception, so a missing or invalid
-`COHERE_API_KEY` is indistinguishable from a reranker that changed nothing. `eval` detects when
-the reranker never executed and `--compare-rerank` refuses to report a delta in that case.
+credential is indistinguishable from a reranker that changed nothing. `eval` detects when the
+reranker never executed and `--compare-rerank` refuses to report a delta in that case — the
+guard that made the 2026-08-26 measurement trustworthy the first time both arms actually ran.
+Significance is a paired t-test over the two arms (`ranx`), not the older rule asking whether
+the delta cleared one question's worth of the metric.
 
 ---
 
@@ -786,14 +793,18 @@ publisher data is untrustworthy.
 
 What remains open:
 
-- [ ] **The reranker has never executed, and whether it stays in v0 is undecided.**
-      `COHERE_API_KEY` is a placeholder, Cohere returns 401, and every recall figure recorded so
-      far is RRF only. The §3 decision that the cross-encoder carries the query/document
-      asymmetry is untested. `search` now reports the failure instead of hiding it, but reporting
-      it is not deciding it.
+- [x] **The reranker question is settled — see §3.** Moved to the closed list below on
+      2026-08-26. What follows in this section is retained because the candidate analysis and
+      the OpenAI finding still govern any future revisit.
 
-      **Decide by measurement, not preference.** Run `eval --compare-rerank` on both stores.
-      The metric's resolution is one question, so 0.03 on these question sets:
+      **Background, retained for a future revisit.** Reranking was hosted, its credential was
+      never set, and every recall figure recorded before 2026-08-26 was RRF only — it was called
+      on every search and failed every time, which is why a fused order and a reranker that
+      changed nothing were indistinguishable. The §3 decision that the
+      cross-encoder carries the query/document asymmetry was untested; it has now been tested.
+
+      **Decided by measurement, not preference** — `eval --compare-rerank`, both stores. The
+      rule was, and for any revisit remains:
 
       - **Delta below 0.03** — drop reranking from v0, record the decision in §3's register and
         the measurement in `docs/PENDING.md` §2. Revisit when a store's catalogue is large enough
@@ -811,16 +822,19 @@ What remains open:
       in §3. There is no way to rerank arbitrary `(query, document)` pairs from our own
       Postgres against an OpenAI model.
 
-      Cohere is not enterprise-only — it has a self-serve tier — but it is the
-      highest-friction option for a POC and the §3 promotion was made on theory rather than
-      measurement. Candidates, ordered by fit at a few hundred products per store. The live
-      constraint is dependency weight: there is no `torch` in the venv and it is already
-      623 MB from Crawl4AI and Playwright, so anything pulling `torch` roughly triples the
-      Cloud Run image that §9 of the evidence doc maps to.
+      A hosted reranker is the highest-friction option for a POC, and the §3 promotion was
+      made on theory rather than measurement. Candidates, ordered by fit at a few hundred
+      products per store. The live
+      constraint is dependency weight: there is still no `torch` in the venv, which grew from
+      623 MB to roughly 1.1 GB on 2026-08-26 when `ranx` (numba, pandas, matplotlib) and
+      `flashrank` (onnxruntime) were added, so anything pulling `torch` roughly triples the
+      Cloud Run image that §9 of the evidence doc maps to. **Adopted: the ONNX cross-encoder
+      row below**, as `ms-marco-MiniLM-L-12-v2` via `flashrank` — the L-12 checkpoint rather
+      than L-6, ~34 MB of model on top of onnxruntime.
 
       | option | local weight | key | note |
       |---|---|---|---|
-      | ONNX cross-encoder, `ms-marco-MiniLM-L-6-v2` | ~90 MB | no | Apache 2.0, 22M params, tens of ms for 60 docs on CPU. No vendor, no rate limit, no silent-401 failure mode |
+      | ONNX cross-encoder, `ms-marco-MiniLM-L-*-v2` | ~34–90 MB | no | **Adopted.** Apache 2.0, tens of ms for 60 docs on CPU. No vendor, no rate limit, no silent-auth failure mode |
       | Voyage `rerank-2.5` / `-lite` | none | yes | Self-serve, free tier |
       | Jina `jina-reranker-v2-base-multilingual` | none | yes | Self-serve. Weights licence differs from the API — check before self-hosting |
       | Mixedbread `mxbai-rerank-base-v1` | ~500 MB via ONNX | optional | Apache 2.0, usable either way |
@@ -831,9 +845,9 @@ What remains open:
       reranker is the hosting, and the corpus is a few hundred products. Model names and tier
       terms change faster than this document; verify current ones before committing.
 
-      If the intent is to answer the question without spending a Cohere key at all, the ONNX
-      cross-encoder makes `--compare-rerank` runnable with no account. `_rerank` is one
-      function and one call site.
+      Running the cross-encoder locally is what made `--compare-rerank` answerable at all: no
+      account to obtain, and no credential whose absence looks like a null result. `_rerank`
+      is one function and one call site.
 
 - [ ] **Quotability decay — deferred, and contraindicated as an age rule.** Assertions carry
       `source_updated_at` and nothing expires. Two separate reasons it stays open.
@@ -881,6 +895,16 @@ the market-pricing claim in §5.6 is unverified. This is blocked on a credential
 The read now reports its own failure rather than degrading in silence.
 
 ### Closed since the 2026-08-25 runs
+
+- [x] **Whether a reranker belongs in v0.** *(2026-08-26)* `eval --compare-rerank` executed both
+      arms for the first time. The delta was below the metric's resolution on both stores, so
+      §10's rule drops it — recorded in §3, measurement in `docs/PENDING.md` §2. The hosted-only
+      code path was the blocker: it ran on every search and failed silently every time. `_rerank`
+      now runs a local ONNX cross-encoder in-process, so the arm is runnable with no account.
+- [x] **`llm.complete` hid which request shape succeeded.** *(2026-08-26)* It attempted three
+      shapes blind and recorded none. It now resolves the shape up front from litellm's
+      capability table and returns it alongside the text; `chat.Turn.to_log` writes it per turn,
+      so two `chat_replay.jsonl` runs are comparable. `docs/PENDING.md` §3c.
 
 - [x] **`search._rerank` fails silently.** `_rerank` and `_attach_live` both record the failure on
       a `Diagnostics` and the CLI prints it. They still degrade rather than raise, which is right

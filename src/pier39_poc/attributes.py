@@ -105,7 +105,7 @@ def build(
 
 
 def summary(attributes: dict[str, Any]) -> dict[str, int]:
-    counts = dict.fromkeys((*SOURCE_ORDER, "absent"), 0)
+    counts: dict[str, int] = dict.fromkeys((*SOURCE_ORDER, "absent"), 0)
     for name, entry in attributes.items():
         if name.startswith("_"):
             continue

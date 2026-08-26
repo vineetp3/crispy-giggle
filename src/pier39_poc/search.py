@@ -29,8 +29,12 @@ exceptions, because degrading beats erroring on a shopper query, but both now re
 failed on a `Diagnostics` the caller can print. This matters most under a price filter:
 `_passes_commerce` rejects any hit with no live read, so a dead credential turns
 `--max-price` into an empty result set that reads as "nothing matches" rather than "the
-price lookup died". A broken COHERE_API_KEY hid behind the same pattern for every run on
-2026-08-25.
+price lookup died". The reranker hid behind the same pattern for every run up to
+2026-08-25. `rerank` defaults to True, so a hosted reranker whose credential was invalid
+was called on every search and failed every time, and the fused order it degraded to was
+indistinguishable from a reranker that changed nothing. That is the argument for a local
+model: `_rerank` now runs an ONNX cross-encoder in-process, so there is no credential to
+be silently wrong and `eval --compare-rerank` measures the stage rather than assuming it.
 
 Commerce constraints are applied AFTER the live read, not as SQL. Price and stock are never
 stored, so there is no column to filter on -- DESIGN.md 5.5 and 5.6 previously asked for
@@ -46,8 +50,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 from . import db
-from .config import StoreConfig, load_stores, storefront_token_for, token_for
+from .config import REPO_ROOT, StoreConfig, load_stores, storefront_token_for, token_for
 from .embeddings import Embedder
 from .families import collapse
 from .matching import FREE_FROM_FIELD
@@ -55,6 +61,10 @@ from .matching import FREE_FROM_FIELD
 RRF_K = 60
 FIRST_STAGE_LIMIT = 200
 LIVE_READ_LIMIT = 60
+
+# Not under DATA_ROOT: this is a downloaded model checkpoint, not store data, and
+# tests monkeypatch DATA_ROOT into a tmpdir, which would re-download it every run.
+RERANK_CACHE_DIR = REPO_ROOT / "data" / "models"
 
 
 @dataclass
@@ -98,10 +108,6 @@ def _rrf(rank: int | None) -> float:
     return 0.0 if rank is None else 1.0 / (RRF_K + rank)
 
 
-def vector_literal(vector: list[float]) -> str:
-    return "[" + ",".join(repr(float(v)) for v in vector) + "]"
-
-
 _SELECT = """
     SELECT d.product_id, d.chunk_key, d.trust_class, d.text, p.handle, p.title,
            p.vendor, p.online_store_url, s.slug
@@ -117,10 +123,10 @@ def _vector_leg(conn, query_vector: list[float], slug: str | None, limit: int) -
         + """
         WHERE d.embedding IS NOT NULL
           AND (%(slug)s::text IS NULL OR s.slug = %(slug)s::text)
-        ORDER BY d.embedding <=> %(vec)s::vector
+        ORDER BY d.embedding <=> %(vec)s
         LIMIT %(limit)s
         """,
-        {"slug": slug, "vec": vector_literal(query_vector), "limit": limit},
+        {"slug": slug, "vec": np.asarray(query_vector, dtype=np.float32), "limit": limit},
     ).fetchall()
 
 
@@ -167,7 +173,9 @@ def _hit_from_row(row: dict[str, Any], **ranks: int) -> Hit:
         chunk_key=row["chunk_key"],
         trust_class=row["trust_class"],
         text=row["text"],
-        **ranks,
+        # ranks carries only the rank fields; pyright matches a dict unpack against
+        # every remaining parameter and cannot see which keys are present.
+        **ranks,  # pyright: ignore[reportArgumentType]
     )
 
 
@@ -337,25 +345,56 @@ def _passes_commerce(hit: Hit, max_price: float | None, in_stock_only: bool) -> 
     return True
 
 
+RERANK_DOC_CHARS = 4000
+DEFAULT_FLASHRANK_MODEL = "ms-marco-MiniLM-L-12-v2"
+_FLASHRANK_CACHE: dict[str, Any] = {}
+
+
+def _flashrank_ranker(name: str):
+    """One Ranker per model. Construction loads the ONNX checkpoint, so it is cached."""
+    if name not in _FLASHRANK_CACHE:
+        from flashrank import Ranker
+
+        _FLASHRANK_CACHE[name] = Ranker(
+            model_name=name or DEFAULT_FLASHRANK_MODEL,
+            cache_dir=str(RERANK_CACHE_DIR),
+            log_level="ERROR",
+        )
+    return _FLASHRANK_CACHE[name]
+
+
+def prepare_rerank(model: str) -> None:
+    """Download and cache the model up front.
+
+    Without this the first shopper query pays an unannounced checkpoint download inside
+    `_rerank`, where the bare `except` would turn a download failure into a silent
+    degrade. Callers that know a rerank is coming should call this first.
+    """
+    _flashrank_ranker(model)
+
+
+def _rerank_flashrank(query: str, hits: list[Hit], name: str) -> list[Hit]:
+    from flashrank import RerankRequest
+
+    ranker = _flashrank_ranker(name)
+    passages = [
+        {"id": i, "text": h.text[:RERANK_DOC_CHARS]} for i, h in enumerate(hits)
+    ]
+    results = ranker.rerank(RerankRequest(query=query, passages=passages))
+    ordered: list[Hit] = []
+    for result in results:
+        hit = hits[int(result["id"])]
+        hit.rerank_score = float(result["score"])
+        ordered.append(hit)
+    return ordered
+
+
 def _rerank(
     query: str, hits: list[Hit], model: str, diag: Diagnostics | None = None
 ) -> list[Hit]:
+    """`model` is a flashrank checkpoint name; an unknown one degrades like any failure."""
     try:
-        import cohere
-
-        client = cohere.ClientV2()
-        response = client.rerank(
-            model=model,
-            query=query,
-            documents=[h.text[:4000] for h in hits],
-            top_n=len(hits),
-        )
-        ordered: list[Hit] = []
-        for result in response.results:
-            hit = hits[result.index]
-            hit.rerank_score = float(result.relevance_score)
-            ordered.append(hit)
-        return ordered
+        return _rerank_flashrank(query, hits, model)
     except Exception as exc:
         if diag is not None:
             diag.rerank_failed = True

@@ -37,7 +37,7 @@ defaults:
   # Indexing
   embedding_model: text-embedding-3-large
   embedding_dimensions: 1024
-  rerank_model: rerank-v4.0-fast
+  rerank_model: ms-marco-MiniLM-L-12-v2
 
 stores:
   - slug: skout

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 import psycopg
-from psycopg.rows import dict_row
+from pgvector.psycopg import register_vector
+from psycopg.rows import DictRow, dict_row
+from psycopg.types.json import Json
 
 from .config import REPO_ROOT, database_url
 
@@ -14,19 +17,27 @@ SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 
 
 @contextmanager
-def connect() -> Iterator[psycopg.Connection]:
-    with psycopg.connect(database_url(), row_factory=dict_row) as conn:
+def connect() -> Iterator[psycopg.Connection[DictRow]]:
+    # Parameterised explicitly rather than via `psycopg.connect(row_factory=...)`:
+    # the plain form is typed as returning Connection[TupleRow], so every `row["key"]`
+    # downstream reads as a tuple slice. Same object at runtime, correct row type here.
+    with psycopg.Connection[DictRow].connect(
+        database_url(), row_factory=dict_row
+    ) as conn:
+        register_vector(conn)
         yield conn
 
 
 def init_db() -> None:
     sql = SCHEMA_PATH.read_text()
     with connect() as conn:
-        conn.execute(sql)
+        # psycopg types `query` as LiteralString to deter injection; this is the
+        # repo's own schema.sql read at runtime, so it is a plain str by nature.
+        conn.execute(sql)  # pyright: ignore[reportCallIssue, reportArgumentType]
         conn.commit()
 
 
-def upsert_store(conn: psycopg.Connection, slug: str, domain: str, api_version: str) -> int:
+def upsert_store(conn: psycopg.Connection[DictRow], slug: str, domain: str, api_version: str) -> int:
     row = conn.execute(
         """
         INSERT INTO stores (slug, domain, admin_api_version)
@@ -43,13 +54,13 @@ def upsert_store(conn: psycopg.Connection, slug: str, domain: str, api_version: 
     return int(row["id"])
 
 
-def set_coverage(conn: psycopg.Connection, store_id: int, coverage_pct: float | None) -> None:
+def set_coverage(conn: psycopg.Connection[DictRow], store_id: int, coverage_pct: float | None) -> None:
     conn.execute(
         "UPDATE stores SET coverage_pct = %s WHERE id = %s", (coverage_pct, store_id)
     )
 
 
-def upsert_product(conn: psycopg.Connection, store_id: int, product: dict[str, Any]) -> int:
+def upsert_product(conn: psycopg.Connection[DictRow], store_id: int, product: dict[str, Any]) -> int:
     row = conn.execute(
         """
         INSERT INTO products (
@@ -88,25 +99,29 @@ def upsert_product(conn: psycopg.Connection, store_id: int, product: dict[str, A
     return int(row["id"])
 
 
-def upsert_variants(conn: psycopg.Connection, product_id: int, variants: list[dict[str, Any]]) -> None:
+_UPSERT_VARIANT = """
+    INSERT INTO variants (product_id, shopify_variant_id, title, sku, selected_options)
+    VALUES (%s, %s, %s, %s, %s)
+    ON CONFLICT (product_id, shopify_variant_id) DO UPDATE SET
+        title = EXCLUDED.title,
+        sku = EXCLUDED.sku,
+        selected_options = EXCLUDED.selected_options
+"""
+
+
+def upsert_variants(conn: psycopg.Connection[DictRow], product_id: int, variants: list[dict[str, Any]]) -> None:
+    if not variants:
+        return
+    params = []
     for v in variants:
         options = {o["name"]: o["value"] for o in (v.get("selectedOptions") or [])}
-        conn.execute(
-            """
-            INSERT INTO variants (product_id, shopify_variant_id, title, sku, selected_options)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (product_id, shopify_variant_id) DO UPDATE SET
-                title = EXCLUDED.title,
-                sku = EXCLUDED.sku,
-                selected_options = EXCLUDED.selected_options
-            """,
-            (product_id, v["id"], v.get("title"), v.get("sku"), psycopg.types.json.Json(options)),
+        params.append(
+            (product_id, v["id"], v.get("title"), v.get("sku"), Json(options))
         )
+    conn.cursor().executemany(_UPSERT_VARIANT, params)
 
 
-def upsert_assertion(conn: psycopg.Connection, product_id: int, a: dict[str, Any]) -> None:
-    conn.execute(
-        """
+_UPSERT_ASSERTION = """
         INSERT INTO field_assertions (
             product_id, field, label, value, source, source_kind, rendered,
             trust_class, source_updated_at, value_hash
@@ -119,24 +134,30 @@ def upsert_assertion(conn: psycopg.Connection, product_id: int, a: dict[str, Any
             source_updated_at = EXCLUDED.source_updated_at,
             value_hash = EXCLUDED.value_hash,
             observed_at = now()
-        """,
-        (
-            product_id,
-            a["field"],
-            a.get("label"),
-            a["value"],
-            a["source"],
-            a["source_kind"],
-            a.get("rendered", False),
-            a["trust_class"],
-            a.get("source_updated_at"),
-            a["value_hash"],
-        ),
+"""
+
+
+def _assertion_params(product_id: int, a: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        product_id,
+        a["field"],
+        a.get("label"),
+        a["value"],
+        a["source"],
+        a["source_kind"],
+        a.get("rendered", False),
+        a["trust_class"],
+        a.get("source_updated_at"),
+        a["value_hash"],
     )
 
 
+def upsert_assertion(conn: psycopg.Connection[DictRow], product_id: int, a: dict[str, Any]) -> None:
+    conn.execute(_UPSERT_ASSERTION, _assertion_params(product_id, a))
+
+
 def delete_products(
-    conn: psycopg.Connection, store_id: int, shopify_product_ids: list[str]
+    conn: psycopg.Connection[DictRow], store_id: int, shopify_product_ids: list[str]
 ) -> int:
     if not shopify_product_ids:
         return 0
@@ -155,10 +176,12 @@ def delete_products(
 
 
 def replace_assertions(
-    conn: psycopg.Connection, product_id: int, rows: list[dict[str, Any]]
+    conn: psycopg.Connection[DictRow], product_id: int, rows: list[dict[str, Any]]
 ) -> None:
-    for row in rows:
-        upsert_assertion(conn, product_id, row)
+    if rows:
+        conn.cursor().executemany(
+            _UPSERT_ASSERTION, [_assertion_params(product_id, r) for r in rows]
+        )
     if not rows:
         conn.execute("DELETE FROM field_assertions WHERE product_id = %s", (product_id,))
         return
@@ -180,48 +203,58 @@ def replace_assertions(
     )
 
 
-def replace_edges(conn: psycopg.Connection, store_id: int, from_id: str, rows: list[dict[str, Any]]) -> None:
+def replace_edges(conn: psycopg.Connection[DictRow], store_id: int, from_id: str, rows: list[dict[str, Any]]) -> None:
     conn.execute(
         "DELETE FROM edges WHERE store_id = %s AND from_type = 'product' AND from_id = %s",
         (store_id, from_id),
     )
-    for r in rows:
-        conn.execute(
-            """
-            INSERT INTO edges (store_id, from_type, from_id, relation, to_type, to_id, source)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-            """,
-            (store_id, r["from_type"], r["from_id"], r["relation"], r["to_type"], r["to_id"], r["source"]),
-        )
+    if not rows:
+        return
+    conn.cursor().executemany(
+        """
+        INSERT INTO edges (store_id, from_type, from_id, relation, to_type, to_id, source)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT DO NOTHING
+        """,
+        [
+            (store_id, r["from_type"], r["from_id"], r["relation"], r["to_type"], r["to_id"], r["source"])
+            for r in rows
+        ],
+    )
 
 
-def replace_rejected_keys(conn: psycopg.Connection, store_id: int, rows: list[dict[str, Any]]) -> None:
+def replace_rejected_keys(conn: psycopg.Connection[DictRow], store_id: int, rows: list[dict[str, Any]]) -> None:
     conn.execute("DELETE FROM rejected_keys WHERE store_id = %s", (store_id,))
-    for r in rows:
-        conn.execute(
-            """
-            INSERT INTO rejected_keys (store_id, namespace, key, reason_code, detail)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (store_id, namespace, key) DO UPDATE
-              SET reason_code = EXCLUDED.reason_code, detail = EXCLUDED.detail
-            """,
-            (store_id, r["namespace"], r["key"], r["reason_code"], (r.get("detail") or "")[:500]),
-        )
+    if not rows:
+        return
+    conn.cursor().executemany(
+        """
+        INSERT INTO rejected_keys (store_id, namespace, key, reason_code, detail)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (store_id, namespace, key) DO UPDATE
+          SET reason_code = EXCLUDED.reason_code, detail = EXCLUDED.detail
+        """,
+        [
+            (store_id, r["namespace"], r["key"], r["reason_code"], (r.get("detail") or "")[:500])
+            for r in rows
+        ],
+    )
 
 
 def replace_template_constants(
-    conn: psycopg.Connection, store_id: int, rows: list[dict[str, Any]]
+    conn: psycopg.Connection[DictRow], store_id: int, rows: list[dict[str, Any]]
 ) -> None:
     conn.execute("DELETE FROM template_constants WHERE store_id = %s", (store_id,))
-    for r in rows:
-        conn.execute(
-            """
-            INSERT INTO template_constants
-                (store_id, template_key, handle, value, label, value_hash)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (store_id, template_key, handle, value_hash) DO NOTHING
-            """,
+    if not rows:
+        return
+    conn.cursor().executemany(
+        """
+        INSERT INTO template_constants
+            (store_id, template_key, handle, value, label, value_hash)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (store_id, template_key, handle, value_hash) DO NOTHING
+        """,
+        [
             (
                 store_id,
                 r["template_key"],
@@ -229,11 +262,13 @@ def replace_template_constants(
                 r["value"],
                 r.get("label"),
                 r["value_hash"],
-            ),
-        )
+            )
+            for r in rows
+        ],
+    )
 
 
-def existing_document_hash(conn: psycopg.Connection, product_id: int, chunk_key: str) -> str | None:
+def existing_document_hash(conn: psycopg.Connection[DictRow], product_id: int, chunk_key: str) -> str | None:
     row = conn.execute(
         "SELECT text_hash FROM documents WHERE product_id = %s AND chunk_key = %s",
         (product_id, chunk_key),
@@ -242,7 +277,7 @@ def existing_document_hash(conn: psycopg.Connection, product_id: int, chunk_key:
 
 
 def upsert_document(
-    conn: psycopg.Connection,
+    conn: psycopg.Connection[DictRow],
     product_id: int,
     chunk_key: str,
     trust_class: str,
@@ -265,7 +300,7 @@ def upsert_document(
     )
 
 
-def products_for_store(conn: psycopg.Connection, slug: str) -> list[dict[str, Any]]:
+def products_for_store(conn: psycopg.Connection[DictRow], slug: str) -> list[dict[str, Any]]:
     return conn.execute(
         """
         SELECT p.* FROM products p

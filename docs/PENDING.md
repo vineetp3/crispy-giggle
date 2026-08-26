@@ -29,7 +29,8 @@ uv run poc eval   --store remi
 uv run pytest -q                   # 131 tests, no token needed
 ```
 
-`.env` holds `PIER39_SHOPIFY_TOKENS` and `OPENAI_API_KEY`. `COHERE_API_KEY` is a placeholder.
+`.env` holds `PIER39_SHOPIFY_TOKENS` and `OPENAI_API_KEY`. Nothing else needs a credential:
+reranking runs locally.
 `PIER39_SHOPIFY_STOREFRONT_TOKENS` is unset.
 
 **State as of this writing** — measured 2026-08-25 with the `static` label policy, which is
@@ -102,17 +103,31 @@ considerably stronger than the first run suggested.
 
 ---
 
-## 2. Reranking — deferred, and undecided
+## 2. Reranking — measured, and it earns nothing *(closed 2026-08-26)*
 
-`COHERE_API_KEY` is the placeholder `xxx`, Cohere returns 401, and every recall figure ever
-recorded is RRF only. `search` now reports the failure instead of hiding it, but reporting is not
-deciding.
+`_rerank` used to call a hosted reranking service whose credential was never set. The important
+part is not that it failed but *how*: `rerank` defaults to `True`, so it was called on **every**
+search and swallowed the auth error into the fused order every time. "Never ran" and "ran and
+changed nothing" produced identical output, which is why no recall figure before this date could
+distinguish them.
 
-`DESIGN.md` §10 holds the decision rule, the finding that OpenAI has no rerank endpoint, and a
-candidate table weighed against the constraint that there is no `torch` in the venv. Not repeated
-here.
+It now runs a local ONNX cross-encoder in-process through `flashrank`, named by `rerank_model`
+as a bare checkpoint. There is no credential to be silently wrong, no per-query network call once
+the checkpoint is cached, and the arm is runnable by anyone who clones the repo.
 
-Two things changed since that rule was written, both arguing for re-measuring first:
+**The measurement, run on 2026-08-26 at `top_k=5`.** Both arms executed; `evaluate`'s
+"INVALID COMPARISON" guard did not fire.
+
+| store | with rerank | without | delta | paired t-test | win/tie/loss |
+|---|---|---|---|---|---|
+| remi | 0.881 (37/42) | 0.881 (37/42) | +0.000 | n/a — identical on every query | 0W / 20T / 0L |
+| skout | 0.896 (43/48) | 0.896 (43/48) | +0.000 | p = 1.0000 | 2W / 20T / 2L |
+
+remi's reranker changed no question's outcome at all. skout's moved four questions and the wins
+exactly cancelled the losses. Under `DESIGN.md` §10's rule — delta below 0.03 — reranking is
+dropped from v0; `DESIGN.md` §3's register carries the decision.
+
+Two things had changed before the measurement, and both still hold for any revisit:
 
 - Duplicate collapse means the top-5 now holds distinct products rather than several spellings of
   one bar. A cross-encoder could never have fixed that crowding, so an A/B before the collapse was
@@ -120,8 +135,13 @@ Two things changed since that rule was written, both arguing for re-measuring fi
 - Scoped questions no longer touch the ranking path at all. If most production traffic is
   product-scoped, a reranker only ever affects discovery queries, which narrows its case.
 
-The ONNX cross-encoder option makes `--compare-rerank` runnable with no vendor account, which is
-the cheapest way to get a number.
+**Still open, deliberately:** the code still reranks by default. The decision above says it is not
+earning its place, but `rerank` remains `True` in `search.search` and `flashrank` is the default
+backend, so every query still pays a local cross-encoder pass. Flipping that default — or removing
+the stage — is a behaviour change and was not made alongside the measurement that motivates it.
+
+Revisit when a store's catalogue is large enough for first-stage recall to fail; the arm is now
+one flag away rather than one vendor account away.
 
 ---
 
@@ -149,10 +169,14 @@ classification and carried into grounded answering, which is a much harder task,
 being revisited. Every number recorded is at `low`. Exposing `--effort` and re-running would
 show whether the remaining uncited sentences are a model limitation or a setting.
 
-**3c. `llm.complete` hides which request shape succeeded.** It tries three, and if a model
-rejects `reasoning_effort` the run proceeds silently at that model's default. Two runs are
-then not necessarily comparable and nothing says so — the same silent-degradation pattern as
-the reranker and the Storefront fallback.
+**3c. `llm.complete` hides which request shape succeeded.** *(closed 2026-08-26)* It tried
+three shapes blind and recorded none, so a model that rejected `reasoning_effort` ran at its own
+default and nothing said so. `complete` now resolves the shape up front from litellm's capability
+table — the same three shapes, in the same order, chosen rather than discovered by failing — and
+returns it alongside the text as a `Completion`. `chat.Turn.to_log` writes it per turn, so
+`chat_replay.jsonl` records what was actually sent and two runs are comparable. A `--limit 8`
+remi replay on 2026-08-26 logged `max_completion_tokens=1200, reasoning_effort=low` on every
+turn.
 
 **3d. Re-scoring requires re-calling the model.** The answers are already logged and the
 scorer is pure text analysis, so a `--rescore` flag reading `chat_replay.jsonl` would make
@@ -266,8 +290,12 @@ doing before the reranker decision, since a third store may move recall more tha
   since (the `quantity` denylist removal, the `label_for` numeric guard, and full-region labelled
   pair recovery), so the original number can no longer be reproduced and the split between causes
   cannot be recovered — only re-derived from scratch. The archaeology is not worth the answer.
-- **`ruff` is not a project dependency** despite a `.ruff_cache` in the tree. There is no lint
-  step. Either add it to the dev extra or delete the cache directory.
+- ~~**`ruff` is not a project dependency**~~ *(closed 2026-08-26)* — added to the `dev` extra with
+  a `[tool.ruff]` block (`E,F,I,UP,B`, line length 100). The tree is clean: `uv run ruff check
+  src/ tests/` passes. `[tool.pyright]` was added alongside it, pinning `venvPath`/`venv` so an
+  editor resolves imports against this project's `.venv` rather than whatever is activated in the
+  shell; that check is clean too, with four rule-scoped `# pyright: ignore` suppressions that each
+  carry a one-line reason.
 
 Added 2026-08-25, from building the label gate and the chat layer. Rough order of value:
 

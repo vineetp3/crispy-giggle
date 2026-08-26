@@ -27,8 +27,6 @@ uv run poc init-db
 - `PIER39_SHOPIFY_TOKENS` — one JSON blob keyed by store slug, e.g.
   `{"skout":"shpat_...","remi":"shpat_..."}`. Needs `read_products`.
 - `OPENAI_API_KEY` — embeddings (`text-embedding-3-large`, 1024 dims).
-- `COHERE_API_KEY` — reranking. Optional; search degrades to the fused order without it, and
-  that degradation is silent. `poc eval --compare-rerank` reports when the reranker did not run.
 - `PIER39_SHOPIFY_STOREFRONT_TOKENS` — optional, same JSON-blob shape. Used for the answer-time
   price and stock read. Without it that read falls back to the Admin API, which has no market
   context and shares the ingestion rate-limit bucket.
@@ -139,7 +137,7 @@ Every command takes `--store` (which overrides the `enabled` flag) and most take
 | what | setting | default |
 |---|---|---|
 | embeddings | `embedding_model` in `config/stores.yaml` | `text-embedding-3-large`, 1024 dims |
-| reranking | `rerank_model` in `config/stores.yaml` | `rerank-v4.0-fast` — has never run |
+| reranking | `rerank_model` in `config/stores.yaml` | `ms-marco-MiniLM-L-12-v2` — a local ONNX cross-encoder via `flashrank`. No key, no network at query time once the checkpoint is cached |
 | label classifier | `PIER39_LABEL_MODEL` | `gpt-5.5` |
 | chat and replay | `PIER39_CHAT_MODEL`, or `--model` | `gpt-5.5` |
 
@@ -235,13 +233,17 @@ What is written down is the reasoning a run cannot reproduce: why each rule exis
 (`docs/DESIGN.md` §5), which publisher data is untrustworthy (§11), and what is still open
 (`docs/PENDING.md`).
 
-Two things have never executed, and every number should be read with them in mind:
+One thing has never executed, and one has now been measured:
 
-- **the reranker** — `COHERE_API_KEY` is a placeholder, so all recall figures are RRF only.
-  Whether a reranker belongs in v0 at all is still open
+- **the reranker** — measured on 2026-08-26, and it earns nothing: the delta was below the
+  metric's resolution on both stores (remi 0W/20T/0L; skout 2W/20T/2L, p = 1.0000). Recall
+  figures recorded before that date are RRF only: reranking then ran against a hosted service
+  with an unset credential, so it failed on every search and the fused order it fell back to
+  was indistinguishable from a reranker that changed nothing. `docs/PENDING.md` §2 has the
+  numbers
 - **the Storefront read** — no storefront token, so live reads used the Admin fallback
 
-Both now report their own failure instead of degrading in silence.
+Both report their own failure instead of degrading in silence.
 
 See `docs/DESIGN.md` §10 for the open items, and its "Closed since the 2026-08-25 runs" list for
 what has been resolved.

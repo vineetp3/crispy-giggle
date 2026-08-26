@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import sys
-import types
-
+from pier39_poc import search
 from pier39_poc.search import Diagnostics, _brief, _passes_commerce, _rerank
 
 
@@ -15,38 +13,52 @@ class FakeHit:
         self.rerank_score = None
 
 
+def _break_reranker(monkeypatch, message):
+    """Break the reranker at its entry point, the cached Ranker."""
+
+    def boom(_name):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(search, "_flashrank_ranker", boom)
+
+
 def test_rerank_records_the_failure_and_keeps_the_fused_order(monkeypatch):
-    stub = types.ModuleType("cohere")
-
-    class Boom:
-        def __init__(self, *a, **kw):
-            raise RuntimeError("Incorrect API key provided")
-
-    stub.ClientV2 = Boom
-    monkeypatch.setitem(sys.modules, "cohere", stub)
+    _break_reranker(monkeypatch, "checkpoint unavailable")
 
     hits = [FakeHit("one"), FakeHit("two")]
     diag = Diagnostics()
-    out = _rerank("query", hits, "rerank-v4.0-fast", diag)
+    out = _rerank("query", hits, "ms-marco-MiniLM-L-12-v2", diag)
 
     assert out == hits
     assert diag.rerank_failed is True
-    assert "Incorrect API key" in diag.rerank_error
+    assert "checkpoint unavailable" in diag.rerank_error
     assert diag.degraded is True
 
 
 def test_rerank_without_diagnostics_still_degrades(monkeypatch):
-    stub = types.ModuleType("cohere")
-
-    class Boom:
-        def __init__(self, *a, **kw):
-            raise RuntimeError("nope")
-
-    stub.ClientV2 = Boom
-    monkeypatch.setitem(sys.modules, "cohere", stub)
+    _break_reranker(monkeypatch, "nope")
 
     hits = [FakeHit()]
-    assert _rerank("q", hits, "m", None) == hits
+    assert _rerank("q", hits, "ms-marco-MiniLM-L-12-v2", None) == hits
+
+
+def test_rerank_leaves_scores_unset_when_it_degrades(monkeypatch):
+    _break_reranker(monkeypatch, "no model")
+
+    hits = [FakeHit("one"), FakeHit("two")]
+    out = _rerank("q", hits, "ms-marco-MiniLM-L-12-v2", Diagnostics())
+
+    assert out == hits
+    assert all(h.rerank_score is None for h in out)
+
+
+def test_an_unknown_checkpoint_degrades_rather_than_raising():
+    """An invalid `rerank_model` is a config error, but not a shopper-facing one."""
+    hits = [FakeHit("one")]
+    diag = Diagnostics()
+    assert _rerank("q", hits, "no-such-checkpoint", diag) == hits
+    assert diag.rerank_failed is True
+    assert diag.rerank_error
 
 
 def test_a_hit_with_no_live_read_fails_a_price_filter():

@@ -13,8 +13,9 @@ recorded per page.
 from __future__ import annotations
 
 import random
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from .artifacts import append_jsonl, ensure_dirs, now_iso, record_stage, write_page
 from .config import FETCH_PROFILES, StoreConfig
@@ -40,6 +41,11 @@ def template_key(product: dict[str, Any]) -> str:
         if value:
             return value
     return "_default"
+
+
+def product_type_key(product: dict[str, Any]) -> str:
+    """Grouping key for `sampling: by_product_type`, mirroring `template_key`."""
+    return (product.get("product_type") or "").strip().lower() or "_default"
 
 
 def selectable(products: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -86,11 +92,9 @@ def floor_shortfall(
     if not pool:
         return None
 
-    if store.sampling == "by_product_type":
-        def key_of(p: dict[str, Any]) -> str:
-            return (p.get("product_type") or "").strip().lower() or "_default"
-    else:
-        key_of = template_key
+    key_of: Callable[[dict[str, Any]], str] = (
+        product_type_key if store.sampling == "by_product_type" else template_key
+    )
 
     reachable = min(len(pool), len({key_of(p) for p in pool}) * GROUP_FLOOR)
     budget = min(store.profile_pages, store.max_pages)
@@ -119,11 +123,9 @@ def _sample(
         rng = random.Random(store.sampling_seed)
         return rng.sample(pool, min(budget, len(pool)))
 
-    if mode == "by_product_type":
-        def key_of(p: dict[str, Any]) -> str:
-            return (p.get("product_type") or "").strip().lower() or "_default"
-    else:
-        key_of = template_key
+    key_of: Callable[[dict[str, Any]], str] = (
+        product_type_key if mode == "by_product_type" else template_key
+    )
 
     groups: dict[str, list[dict[str, Any]]] = {}
     for p in pool:
@@ -215,7 +217,9 @@ async def _crawl_batch(
             config=_run_config(store),
             dispatcher=_dispatcher(store),
         )
-        for result in results:
+        # arun_many returns CrawlResultContainer | AsyncGenerator; we never stream,
+        # so it is the container, which is iterable. Pyright cannot narrow the union.
+        for result in results:  # pyright: ignore[reportGeneralTypeIssues]
             handle = by_url.get(getattr(result, "url", None))
             if handle:
                 out[handle] = (result, profile)
