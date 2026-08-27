@@ -21,10 +21,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "ruff>=0.9"]
+dev = ["pytest>=8.3", "ruff>=0.9", "import-linter>=2.13"]
 
 [project.scripts]
-poc = "pier39_poc.cli:app"
+poc = "pier39_poc.cli.app:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -62,3 +62,23 @@ root = "tests"
 reportArgumentType = "none"
 reportAttributeAccessIssue = "none"
 reportOperatorIssue = "none"
+
+[tool.importlinter]
+# The dependency direction from docs/ARCHITECTURE.md, machine-checked.
+root_package = "pier39_poc"
+
+[[tool.importlinter.contracts]]
+name = "Layers flow downward only"
+type = "layers"
+containers = ["pier39_poc"]
+# High to low. `ingest | retrieval` are independent siblings: neither may import the other.
+layers = [
+    "cli",
+    "presentation",
+    "evaluation",
+    "ingest | retrieval",
+    "infra",
+    "core",
+]
+# Fails if a new subpackage is added without being placed in the order above.
+exhaustive = true

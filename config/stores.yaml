@@ -27,17 +27,54 @@ defaults:
   delay_seconds: [1.0, 3.0]
   page_timeout_ms: 45000
 
-  # Profiling
-  chrome_threshold: 0.8 # MUST NOT be 1.0 -- see DESIGN.md 5.3
-  min_block_chars: 3
-  containment_threshold: 0.8
-  allowlist_min_support: 3
-  allowlist_min_hit_rate: 0.8
-
   # Indexing
   embedding_model: text-embedding-3-large
   embedding_dimensions: 1024
   rerank_model: ms-marco-MiniLM-L-12-v2
+
+  # Algorithm thresholds. Everything above is an operational setting -- a budget, a
+  # profile, a model name. Everything here changes the ANSWER for the same catalogue.
+  # Defaults and the reasoning for each: src/pier39_poc/core/tuning.py.
+  # Override a single group per store; the other groups are inherited.
+  tuning:
+    blocks:
+      chrome_threshold: 0.8 # MUST NOT be 1.0 -- see DESIGN.md 5.3
+      min_block_chars: 3
+      cross_page_min_pages: 3
+      cross_page_min_words: 20
+      max_label_words: 4
+    matching:
+      containment_threshold: 0.8
+      min_candidate_tokens: 2
+      min_candidate_chars: 8
+      window_slack: 2.0
+      min_window: 6
+      min_prose_tokens_for_title_check: 15
+    quotability:
+      quotable_max_tokens: 8
+      theme_quotable_max_tokens: 15
+    crawl:
+      group_floor: 3
+    profiling:
+      allowlist_min_support: 3
+      allowlist_min_hit_rate: 0.8
+      foreign_title_reject_rate: 0.25
+      label_min_observations: 2
+      label_min_dominance: 0.8
+      spec_value_max_tokens: 25
+    documents:
+      max_field_chars: 1200
+    retrieval:
+      rrf_k: 60
+      first_stage_limit: 200
+      live_read_limit: 60
+      rerank_doc_chars: 4000
+    chat:
+      max_retrieval_shown: 12
+    llm:
+      default_budget: 512
+    evaluation:
+      significance_max_p: 0.05
 
 stores:
   - slug: skout

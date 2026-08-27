@@ -1,0 +1,496 @@
+[
+  {
+    "id": "gid://shopify/Product/6942124474451",
+    "product_id": "6942124474451",
+    "handle": "peanut-butter",
+    "title": "Skout Organic Peanut Butter Soft Baked Cookies",
+    "vendor": "Skout Organic",
+    "product_type": "Soft Baked Cookies",
+    "tags": [
+      "cr-ignore"
+    ],
+    "status": "ACTIVE",
+    "online_store_url": "https://www.skoutorganic.com/products/peanut-butter",
+    "description_html": "<p>This Peanut Butter cookie came to do one thing. As if baking organic peanut butter into a soft, chewy cookie wasn't enough, you'll find creamy peanut butter chips all through it, plus a pinch of Himalayan pink salt for contrast.</p>",
+    "template_suffix": null,
+    "collections": [
+      {
+        "handle": "soft-baked-cookies",
+        "title": "Soft-Baked Cookies"
+      }
+    ],
+    "metafields": [
+      {
+        "namespace": "filter",
+        "key": "ingredients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Organic Date Syrup\", \"Organic Peanut Butter\", \"Organic Coconut Sugar\", \"Organic Coconut Oil\", \"Organic Oat Flour\", \"Organic Cassava Flour\", \"Organic Peanut Butter Chips\", \"Baking Soda\", \"Himalayan Pink Salt\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "nutrients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Protein [1g]\", \"Carbs [13g]\", \"Calories [110]\", \"Fiber [1g]\", \"Sugar [8g]\"]"
+      },
+      {
+        "namespace": "filter",
+        "key": "contains",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Almonds\", \"Cashews\", \"Hazelnuts\", \"Pecans\", \"Walnuts\"]"
+      },
+      {
+        "namespace": "descriptors",
+        "key": "subtitle",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Soft Baked Cookies"
+      },
+      {
+        "namespace": "custom",
+        "key": "product_faqs",
+        "type": "json",
+        "updatedAt": "2026-02-01T00:00:00Z",
+        "value": "[{\"question\": \"Are these cookies vegan and gluten-free?\", \"answer\": \"They are certified vegan and certified gluten free.\"}]"
+      },
+      {
+        "namespace": "display",
+        "key": "certification",
+        "type": "list.file_reference",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"gid://shopify/MediaImage/53282278506860\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "admin_title",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Internal - peanut-butter"
+      },
+      {
+        "namespace": "stamped",
+        "key": "reviews",
+        "type": "string",
+        "updatedAt": "2022-09-10T00:00:00Z",
+        "value": "<div class='stamped-review-product'><a href='//www.skoutorganic.com/products/skout-organic-apple-pie-kids-bar'>Skout Organic Apple Pie Kids Bar</a></div><span data-product-id='3934936825939'>63 reviews</span>"
+      },
+      {
+        "namespace": "global",
+        "key": "description_tag",
+        "type": "string",
+        "updatedAt": "2022-09-10T00:00:00Z",
+        "value": "No Thanksgiving necessary. This bar will curb your cravings for Grandma's apple pie 365 days a year."
+      }
+    ],
+    "variants": [
+      {
+        "id": "gid://shopify/ProductVariant/405255919693",
+        "title": "3 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "3 Boxes"
+          }
+        ]
+      },
+      {
+        "id": "gid://shopify/ProductVariant/405255919696",
+        "title": "6 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "6 Boxes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gid://shopify/Product/6942124507219",
+    "product_id": "6942124507219",
+    "handle": "oatmeal-chocolate-chip",
+    "title": "Skout Organic Oatmeal Chocolate Chip Soft Baked Cookies",
+    "vendor": "Skout Organic",
+    "product_type": "Soft Baked Cookies",
+    "tags": [
+      "cr-ignore"
+    ],
+    "status": "ACTIVE",
+    "online_store_url": "https://www.skoutorganic.com/products/oatmeal-chocolate-chip",
+    "description_html": "<p>A cookie.</p>",
+    "template_suffix": null,
+    "collections": [
+      {
+        "handle": "soft-baked-cookies",
+        "title": "Soft-Baked Cookies"
+      }
+    ],
+    "metafields": [
+      {
+        "namespace": "filter",
+        "key": "ingredients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Organic Date Syrup\", \"Organic Peanut Butter\", \"Organic Coconut Sugar\", \"Organic Coconut Oil\", \"Organic Oat Flour\", \"Organic Cassava Flour\", \"Organic Peanut Butter Chips\", \"Baking Soda\", \"Himalayan Pink Salt\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "nutrients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Protein [1g]\", \"Carbs [13g]\", \"Calories [110]\", \"Fiber [1g]\", \"Sugar [8g]\"]"
+      },
+      {
+        "namespace": "filter",
+        "key": "contains",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Almonds\", \"Cashews\", \"Hazelnuts\", \"Pecans\", \"Walnuts\"]"
+      },
+      {
+        "namespace": "descriptors",
+        "key": "subtitle",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Soft Baked Cookies"
+      },
+      {
+        "namespace": "custom",
+        "key": "product_faqs",
+        "type": "json",
+        "updatedAt": "2026-02-01T00:00:00Z",
+        "value": "[{\"question\": \"Are these cookies vegan and gluten-free?\", \"answer\": \"They are certified vegan and certified gluten free.\"}]"
+      },
+      {
+        "namespace": "display",
+        "key": "certification",
+        "type": "list.file_reference",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"gid://shopify/MediaImage/53282278506860\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "admin_title",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Internal - oatmeal-chocolate-chip"
+      }
+    ],
+    "variants": [
+      {
+        "id": "gid://shopify/ProductVariant/405255919693",
+        "title": "3 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "3 Boxes"
+          }
+        ]
+      },
+      {
+        "id": "gid://shopify/ProductVariant/405255919696",
+        "title": "6 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "6 Boxes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gid://shopify/Product/6942124539987",
+    "product_id": "6942124539987",
+    "handle": "lemon-poppyseed",
+    "title": "Skout Organic Lemon Poppyseed Soft Baked Cookies",
+    "vendor": "Skout Organic",
+    "product_type": "Soft Baked Cookies",
+    "tags": [
+      "cr-ignore"
+    ],
+    "status": "ACTIVE",
+    "online_store_url": "https://www.skoutorganic.com/products/lemon-poppyseed",
+    "description_html": "<p>A cookie.</p>",
+    "template_suffix": null,
+    "collections": [
+      {
+        "handle": "soft-baked-cookies",
+        "title": "Soft-Baked Cookies"
+      }
+    ],
+    "metafields": [
+      {
+        "namespace": "filter",
+        "key": "ingredients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Organic Date Syrup\", \"Organic Peanut Butter\", \"Organic Coconut Sugar\", \"Organic Coconut Oil\", \"Organic Oat Flour\", \"Organic Cassava Flour\", \"Organic Peanut Butter Chips\", \"Baking Soda\", \"Himalayan Pink Salt\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "nutrients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Protein [1g]\", \"Carbs [13g]\", \"Calories [110]\", \"Fiber [1g]\", \"Sugar [8g]\"]"
+      },
+      {
+        "namespace": "filter",
+        "key": "contains",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Almonds\", \"Cashews\", \"Hazelnuts\", \"Pecans\", \"Walnuts\"]"
+      },
+      {
+        "namespace": "descriptors",
+        "key": "subtitle",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Soft Baked Cookies"
+      },
+      {
+        "namespace": "custom",
+        "key": "product_faqs",
+        "type": "json",
+        "updatedAt": "2026-02-01T00:00:00Z",
+        "value": "[{\"question\": \"Are these cookies vegan and gluten-free?\", \"answer\": \"They are certified vegan and certified gluten free.\"}]"
+      },
+      {
+        "namespace": "display",
+        "key": "certification",
+        "type": "list.file_reference",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"gid://shopify/MediaImage/53282278506860\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "admin_title",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Internal - lemon-poppyseed"
+      }
+    ],
+    "variants": [
+      {
+        "id": "gid://shopify/ProductVariant/405255919693",
+        "title": "3 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "3 Boxes"
+          }
+        ]
+      },
+      {
+        "id": "gid://shopify/ProductVariant/405255919696",
+        "title": "6 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "6 Boxes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gid://shopify/Product/6942124572755",
+    "product_id": "6942124572755",
+    "handle": "oatmeal-raisin",
+    "title": "Skout Organic Oatmeal Raisin Soft Baked Cookies",
+    "vendor": "Skout Organic",
+    "product_type": "Soft Baked Cookies",
+    "tags": [
+      "cr-ignore"
+    ],
+    "status": "ACTIVE",
+    "online_store_url": "https://www.skoutorganic.com/products/oatmeal-raisin",
+    "description_html": "<p>A cookie.</p>",
+    "template_suffix": null,
+    "collections": [
+      {
+        "handle": "soft-baked-cookies",
+        "title": "Soft-Baked Cookies"
+      }
+    ],
+    "metafields": [
+      {
+        "namespace": "filter",
+        "key": "ingredients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Organic Date Syrup\", \"Organic Peanut Butter\", \"Organic Coconut Sugar\", \"Organic Coconut Oil\", \"Organic Oat Flour\", \"Organic Cassava Flour\", \"Organic Peanut Butter Chips\", \"Baking Soda\", \"Himalayan Pink Salt\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "nutrients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Protein [1g]\", \"Carbs [13g]\", \"Calories [110]\", \"Fiber [1g]\", \"Sugar [8g]\"]"
+      },
+      {
+        "namespace": "filter",
+        "key": "contains",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Almonds\", \"Cashews\", \"Hazelnuts\", \"Pecans\", \"Walnuts\"]"
+      },
+      {
+        "namespace": "descriptors",
+        "key": "subtitle",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Soft Baked Cookies"
+      },
+      {
+        "namespace": "custom",
+        "key": "product_faqs",
+        "type": "json",
+        "updatedAt": "2026-02-01T00:00:00Z",
+        "value": "[{\"question\": \"Are these cookies vegan and gluten-free?\", \"answer\": \"They are certified vegan and certified gluten free.\"}]"
+      },
+      {
+        "namespace": "display",
+        "key": "certification",
+        "type": "list.file_reference",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"gid://shopify/MediaImage/53282278506860\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "admin_title",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Internal - oatmeal-raisin"
+      }
+    ],
+    "variants": [
+      {
+        "id": "gid://shopify/ProductVariant/405255919693",
+        "title": "3 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "3 Boxes"
+          }
+        ]
+      },
+      {
+        "id": "gid://shopify/ProductVariant/405255919696",
+        "title": "6 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "6 Boxes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gid://shopify/Product/6942124605523",
+    "product_id": "6942124605523",
+    "handle": "double-chocolate",
+    "title": "Skout Organic Double Chocolate Soft Baked Cookies",
+    "vendor": "Skout Organic",
+    "product_type": "Soft Baked Cookies",
+    "tags": [
+      "cr-ignore"
+    ],
+    "status": "ACTIVE",
+    "online_store_url": "https://www.skoutorganic.com/products/double-chocolate",
+    "description_html": "<p>A cookie.</p>",
+    "template_suffix": null,
+    "collections": [
+      {
+        "handle": "soft-baked-cookies",
+        "title": "Soft-Baked Cookies"
+      }
+    ],
+    "metafields": [
+      {
+        "namespace": "filter",
+        "key": "ingredients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Organic Date Syrup\", \"Organic Peanut Butter\", \"Organic Coconut Sugar\", \"Organic Coconut Oil\", \"Organic Oat Flour\", \"Organic Cassava Flour\", \"Organic Peanut Butter Chips\", \"Baking Soda\", \"Himalayan Pink Salt\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "nutrients",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Protein [1g]\", \"Carbs [13g]\", \"Calories [110]\", \"Fiber [1g]\", \"Sugar [8g]\"]"
+      },
+      {
+        "namespace": "filter",
+        "key": "contains",
+        "type": "list.single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"Almonds\", \"Cashews\", \"Hazelnuts\", \"Pecans\", \"Walnuts\"]"
+      },
+      {
+        "namespace": "descriptors",
+        "key": "subtitle",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Soft Baked Cookies"
+      },
+      {
+        "namespace": "custom",
+        "key": "product_faqs",
+        "type": "json",
+        "updatedAt": "2026-02-01T00:00:00Z",
+        "value": "[{\"question\": \"Are these cookies vegan and gluten-free?\", \"answer\": \"They are certified vegan and certified gluten free.\"}]"
+      },
+      {
+        "namespace": "display",
+        "key": "certification",
+        "type": "list.file_reference",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "[\"gid://shopify/MediaImage/53282278506860\"]"
+      },
+      {
+        "namespace": "custom",
+        "key": "admin_title",
+        "type": "single_line_text_field",
+        "updatedAt": "2026-01-10T00:00:00Z",
+        "value": "Internal - double-chocolate"
+      }
+    ],
+    "variants": [
+      {
+        "id": "gid://shopify/ProductVariant/405255919693",
+        "title": "3 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "3 Boxes"
+          }
+        ]
+      },
+      {
+        "id": "gid://shopify/ProductVariant/405255919696",
+        "title": "6 Boxes",
+        "sku": null,
+        "selectedOptions": [
+          {
+            "name": "Pack Size",
+            "value": "6 Boxes"
+          }
+        ]
+      }
+    ]
+  }
+]
