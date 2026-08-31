@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from pier39_poc.core.models import KeyVerdictRecord
+
 APPLE_PIE_ID = "3934936825939"
 
 
@@ -97,13 +99,32 @@ def test_region_words_are_smaller_than_the_raw_page(payload):
         assert 50 < words < 1500, (handle, words)
 
 
+def _admitted(namespace: str, key: str, support: int) -> KeyVerdictRecord:
+    return KeyVerdictRecord(
+        namespace=namespace,
+        key=key,
+        type="single_line_text_field",
+        admitted=True,
+        reason="admitted",
+        hit_rate=None,
+        support=support,
+        observed=support,
+        matches=support,
+        label=None,
+        labels_seen=[],
+        label_observations=0,
+        matched_handles=[],
+        detail="",
+    )
+
+
 def test_attribute_reachability_separates_sources():
     from pier39_poc.core.attributes import build, summary
 
     allowlist = [
-        {"namespace": "filter", "key": "contains", "support": 154, "label": None},
-        {"namespace": "custom", "key": "nutrients", "support": 48, "label": None},
-        {"namespace": "custom", "key": "short_title", "support": 171, "label": None},
+        _admitted("filter", "contains", 154),
+        _admitted("custom", "nutrients", 48),
+        _admitted("custom", "short_title", 171),
     ]
     constants = {
         "water-flosser": [

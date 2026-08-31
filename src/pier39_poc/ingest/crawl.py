@@ -5,6 +5,7 @@ First stage after fetch-api; writes data/<slug>/pages/. Gotchas: docs/reference/
 
 from __future__ import annotations
 
+import asyncio
 import random
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -61,7 +62,7 @@ def select_pages(store: StoreConfig, products: list[Product]) -> list[Product]:
         return pool[: store.max_pages]
 
     if store.crawl_scope == "template_representatives":
-        chosen: dict[str, dict[str, Any]] = {}
+        chosen: dict[str, Product] = {}
         for p in pool:
             chosen.setdefault(template_key(p), p)
         return list(chosen.values())[: store.max_pages]
@@ -127,7 +128,7 @@ def _sample(
         rng.shuffle(items)
 
     order = sorted(groups)
-    picked: list[dict[str, Any]] = []
+    picked: list[Product] = []
 
     for want in range(1, DEFAULTS.crawl.group_floor + 1):
         for k in order:
@@ -149,6 +150,18 @@ def _looks_blocked(status: int | None, body: str) -> bool:
         return True
     head = (body or "")[:4000].lower()
     return any(m in head for m in CLOUDFLARE_MARKERS)
+
+
+def _failure_reason(result: Any, status: int | None, raw: str) -> str | None:
+    if not raw:
+        return getattr(result, "error_message", None) or "empty body"
+    if status is not None and status >= 400:
+        return f"HTTP {status}"
+    if not bool(getattr(result, "success", False)):
+        return getattr(result, "error_message", None) or "crawl reported failure"
+    if _looks_blocked(status, raw):
+        return getattr(result, "error_message", None) or "blocked"
+    return None
 
 
 def _escalation_ladder(start: str) -> list[str]:
@@ -199,7 +212,7 @@ async def _crawl_batch(
 ) -> dict[str, tuple[Any, str]]:
     from crawl4ai import AsyncWebCrawler
 
-    by_url = {t.online_store_url: t.handle for t in targets}
+    by_url = {t.online_store_url: t.handle for t in targets if t.online_store_url}
     out: dict[str, tuple[Any, str]] = {}
 
     async with AsyncWebCrawler(config=_browser_config(profile, store)) as crawler:
@@ -209,10 +222,52 @@ async def _crawl_batch(
             dispatcher=_dispatcher(store),
         )
         for result in results:  # pyright: ignore[reportGeneralTypeIssues]
-            handle = by_url.get(getattr(result, "url", None))
+            handle = by_url.get(str(getattr(result, "url", "") or ""))
             if handle:
                 out[handle] = (result, profile)
     return out
+
+
+def _record_batch(
+    store: StoreConfig,
+    pending: list[Product],
+    batch: dict[str, tuple[Any, str]],
+    profile: str,
+    outcomes: dict[str, FetchOutcome],
+) -> list[Product]:
+    still_pending: list[Product] = []
+
+    for target in pending:
+        handle = target.handle
+        url = target.online_store_url or ""
+        entry = batch.get(handle)
+
+        if entry is None:
+            still_pending.append(target)
+            outcomes[handle] = FetchOutcome(
+                handle, url, False, None, 0, profile, None, "no result returned"
+            )
+            continue
+
+        result, used = entry
+        raw = getattr(result, "html", "") or ""
+        status = getattr(result, "status_code", None)
+        failure = _failure_reason(result, status, raw)
+
+        if failure:
+            still_pending.append(target)
+            outcomes[handle] = FetchOutcome(
+                handle, url, False, status, len(raw), used, None, failure
+            )
+            continue
+
+        markdown = _markdown_of(result)
+        content_hash = write_page(store, handle, raw, markdown)
+        outcomes[handle] = FetchOutcome(
+            handle, url, True, status, len(raw), used, content_hash
+        )
+
+    return still_pending
 
 
 async def fetch_pages(
@@ -224,46 +279,25 @@ async def fetch_pages(
 
     outcomes: dict[str, FetchOutcome] = {}
     pending = list(targets)
+    ladder = _escalation_ladder(store.fetch_profile)
 
-    for profile in _escalation_ladder(store.fetch_profile):
+    for index, profile in enumerate(ladder):
         if not pending:
             break
+        if index:
+            await asyncio.sleep(store.escalation_cooldown_seconds)
 
         batch = await _crawl_batch(store, pending, profile)
-        still_pending: list[Product] = []
+        pending = _record_batch(store, pending, batch, profile, outcomes)
 
-        for target in pending:
-            handle = target.handle
-            url = target.online_store_url or ""
-            entry = batch.get(handle)
-
-            if entry is None:
-                still_pending.append(target)
-                outcomes[handle] = FetchOutcome(
-                    handle, url, False, None, 0, profile, None, "no result returned"
-                )
-                continue
-
-            result, used = entry
-            raw = getattr(result, "html", "") or ""
-            status = getattr(result, "status_code", None)
-            success = bool(getattr(result, "success", False)) and bool(raw)
-
-            if not success or _looks_blocked(status, raw):
-                still_pending.append(target)
-                outcomes[handle] = FetchOutcome(
-                    handle, url, False, status, len(raw), used, None,
-                    getattr(result, "error_message", None) or "blocked or empty",
-                )
-                continue
-
-            markdown = _markdown_of(result)
-            content_hash = write_page(store, handle, raw, markdown)
-            outcomes[handle] = FetchOutcome(
-                handle, url, True, status, len(raw), used, content_hash
-            )
-
-        pending = still_pending
+    if pending:
+        await asyncio.sleep(store.final_retry_delay_seconds)
+        profile = ladder[-1]
+        stragglers = list(pending)
+        pending = []
+        for target in stragglers:
+            batch = await _crawl_batch(store, [target], profile)
+            pending.extend(_record_batch(store, [target], batch, profile, outcomes))
 
     for outcome in outcomes.values():
         append_jsonl(

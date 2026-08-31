@@ -54,6 +54,8 @@ class StoreConfig(BaseModel):
     concurrency: int = 4
     delay_seconds: tuple[float, float] = (1.0, 3.0)
     page_timeout_ms: int = 45000
+    escalation_cooldown_seconds: float = 30.0
+    final_retry_delay_seconds: float = 60.0
 
     tuning: Tuning = Tuning()
 
@@ -84,6 +86,8 @@ class StoreConfig(BaseModel):
             )
         if self.sampling == "explicit" and not self.explicit_handles:
             raise ConfigError(f"{self.slug}: sampling=explicit needs explicit_handles")
+        if self.escalation_cooldown_seconds < 0 or self.final_retry_delay_seconds < 0:
+            raise ConfigError(f"{self.slug}: cooldown/retry delays must not be negative")
         if self.profile_pages < 5:
             raise ConfigError(
                 f"{self.slug}: profile_pages below 5 makes differencing unreliable"

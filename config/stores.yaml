@@ -15,7 +15,7 @@ defaults:
   # stores large enough to need it. See DESIGN.md 5.2.
   profile_pages: 40 # pages used to derive the boilerplate profile + allowlist
   crawl_scope: sample # none | sample | template_representatives | all
-  max_pages: 250 # hard ceiling, independent of crawl_scope
+  max_pages: 500 # hard ceiling, independent of crawl_scope
 
   sampling: by_template # by_template | by_product_type | random | first_n | explicit
   sampling_seed: 1739
@@ -26,6 +26,10 @@ defaults:
   concurrency: 4
   delay_seconds: [1.0, 3.0]
   page_timeout_ms: 45000
+  # Escalation pacing. Without these the ladder re-hammers a rate-limited batch
+  # three times back to back, turning one 429 into three.
+  escalation_cooldown_seconds: 30.0 # pause between profile rungs
+  final_retry_delay_seconds: 60.0 # pause before the serial straggler pass
 
   # Indexing
   embedding_model: text-embedding-3-large
@@ -89,6 +93,22 @@ stores:
     fetch_profile: stealth
     crawl_scope: all
     concurrency: 2
+    delay_seconds: [2.0, 5.0]
+
+  - slug: thighsociety
+    domain: thighsociety.myshopify.com
+    enabled: true
+    fetch_profile: plain
+    crawl_scope: all
+    concurrency: 1
+    delay_seconds: [2.0, 5.0]
+
+  - slug: trueclassic
+    domain: trueclassictees-com.myshopify.com
+    enabled: true
+    fetch_profile: plain
+    crawl_scope: all
+    concurrency: 4
     delay_seconds: [2.0, 5.0]
 
   - slug: countrylife

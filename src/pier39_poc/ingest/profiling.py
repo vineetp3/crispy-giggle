@@ -34,7 +34,16 @@ from pier39_poc.core.matching import (
     match_candidate,
     tokens,
 )
-from pier39_poc.core.models import ChromeSummary, Product, StoreProfile
+from pier39_poc.core.models import (
+    ChromeSummary,
+    Coverage,
+    Declarations,
+    KeyVerdictRecord,
+    Product,
+    StoreProfile,
+    TemplateConstants,
+    ThemeBlockCount,
+)
 from pier39_poc.core.quotability import (
     is_commerce_constant,
     is_commerce_fact,
@@ -117,23 +126,23 @@ class KeyVerdict:
     def full_key(self) -> str:
         return f"{self.namespace}.{self.key}"
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "namespace": self.namespace,
-            "key": self.key,
-            "type": self.type,
-            "admitted": self.admitted,
-            "reason": self.reason,
-            "hit_rate": self.hit_rate,
-            "support": self.support,
-            "observed": self.observed,
-            "matches": self.matches,
-            "label": self.labels[0][0] if self.labels else None,
-            "labels_seen": [list(pair) for pair in self.labels],
-            "label_observations": sum(count for _, count in self.labels),
-            "matched_handles": sorted(self.matched_handles),
-            "detail": self.detail,
-        }
+    def to_record(self) -> KeyVerdictRecord:
+        return KeyVerdictRecord(
+            namespace=self.namespace,
+            key=self.key,
+            type=self.type,
+            admitted=self.admitted,
+            reason=self.reason,
+            hit_rate=self.hit_rate,
+            support=self.support,
+            observed=self.observed,
+            matches=self.matches,
+            label=self.labels[0][0] if self.labels else None,
+            labels_seen=[list(pair) for pair in self.labels],
+            label_observations=sum(count for _, count in self.labels),
+            matched_handles=sorted(self.matched_handles),
+            detail=self.detail,
+        )
 
 
 def sha_short(text: str) -> str:
@@ -161,7 +170,7 @@ def _page_blocks(store: StoreConfig, handles: list[str], min_chars: int) -> dict
 
 
 def _description_rendered(
-    product: dict[str, Any], index: PageIndex, threshold: float
+    product: Product, index: PageIndex, threshold: float
 ) -> bool:
     text = visible_text(product.description_html)
     if not text.strip():
@@ -187,7 +196,7 @@ def _reference_key_counts(products: list[Product]) -> dict[str, int]:
     return dict(counts)
 
 
-def _declaration_audit(products: list[Product]) -> dict[str, Any]:
+def _declaration_audit(products: list[Product]) -> Declarations:
     published = [p for p in products if p.online_store_url]
     with_decl: list[str] = []
     without: list[str] = []
@@ -198,13 +207,13 @@ def _declaration_audit(products: list[Product]) -> dict[str, Any]:
             for mf in product.metafields
         )
         (with_decl if has else without).append(product.handle)
-    return {
-        "fields": sorted(f"{ns}.{key}" for ns, key in FREE_FROM_KEYS),
-        "published": len(published),
-        "with_declaration": len(with_decl),
-        "without_declaration": len(without),
-        "handles_without_sample": sorted(without)[:20],
-    }
+    return Declarations(
+        fields=sorted(f"{ns}.{key}" for ns, key in FREE_FROM_KEYS),
+        published=len(published),
+        with_declaration=len(with_decl),
+        without_declaration=len(without),
+        handles_without_sample=sorted(without)[:20],
+    )
 
 
 def _analysable_handles(
@@ -274,17 +283,17 @@ def build_profile(store: StoreConfig) -> StoreProfile:
 
     admitted = [v for v in verdicts.values() if v.admitted]
     rejected = [v for v in verdicts.values() if not v.admitted]
-    allowlist = [v.to_dict() for v in sorted(admitted, key=lambda v: v.full_key)]
+    allowlist = [v.to_record() for v in sorted(admitted, key=lambda v: v.full_key)]
     reference = load_reference(store.slug)
     affirmed = {
         c["label"]
-        for blocks in (constants.get("per_product") or {}).values()
+        for blocks in constants.per_product.values()
         for c in blocks
         if c.get("label") and reference.get(normalise_label(c["label"])) == SPEC
     }
     attributes = build_attributes(
         allowlist,
-        constants.get("by_template") or {},
+        constants.by_template,
         _reference_key_counts(products),
         affirmed,
     )
@@ -309,7 +318,7 @@ def build_profile(store: StoreConfig) -> StoreProfile:
         region_words={h: sum(len(b.split()) for b in r) for h, r in regions.items()},
         attributes=attributes,
         allowlist=allowlist,
-        rejected=[v.to_dict() for v in sorted(rejected, key=lambda v: v.full_key)],
+        rejected=[v.to_record() for v in sorted(rejected, key=lambda v: v.full_key)],
         template_constants=constants,
         coverage=coverage,
     )
@@ -473,7 +482,11 @@ def _collect_evidence(
 
 
 def _verdict_for(
-    store: StoreConfig, ident: Ident, ev: KeyEvidence, namespace_newest: str
+    store: StoreConfig,
+    ident: Ident,
+    ev: KeyEvidence,
+    namespace_newest: str,
+    namespace_peak_support: int = 0,
 ) -> KeyVerdict:
     ns, key = ident
 
@@ -484,14 +497,21 @@ def _verdict_for(
     if ev.support == 0:
         return KeyVerdict(ns, key, ev.mf_type, False, "no_usable_value")
 
+    stale_floor = namespace_peak_support * store.tuning.profiling.stale_support_ratio
     if (
         ev.updated_at
         and namespace_newest
         and ev.updated_at < namespace_newest[:4] + "-01-01"
+        and ev.support < stale_floor
     ):
         return KeyVerdict(
             ns, key, ev.mf_type, False, "stale_namespace", support=ev.support,
-            detail=f"updatedAt {ev.updated_at} vs namespace newest {namespace_newest}",
+            detail=(
+                f"updatedAt {ev.updated_at} vs namespace newest {namespace_newest}; "
+                f"support {ev.support} below {stale_floor:.0f} "
+                f"({store.tuning.profiling.stale_support_ratio:.0%} of namespace peak "
+                f"{namespace_peak_support})"
+            ),
         )
 
     if ev.foreign_title_hits / ev.support >= DEFAULTS.profiling.foreign_title_reject_rate:
@@ -550,8 +570,18 @@ def _derive_allowlist(
     evidence = _collect_evidence(
         store, products, page_index, regions, known_handles, known_ids, distinctive
     )
+    namespace_peak: dict[str, int] = {}
+    for (ns, _), ev in evidence.items():
+        if ev.support > namespace_peak.get(ns, 0):
+            namespace_peak[ns] = ev.support
     return {
-        ident: _verdict_for(store, ident, ev, namespace_newest.get(ident[0], ""))
+        ident: _verdict_for(
+            store,
+            ident,
+            ev,
+            namespace_newest.get(ident[0], ""),
+            namespace_peak.get(ident[0], 0),
+        )
         for ident, ev in evidence.items()
     }
 
@@ -754,21 +784,21 @@ def _coverage_totals(
     per_product_theme: dict[str, list[str]],
     total_words: int,
     residual_words: int,
-) -> dict[str, Any]:
-    return {
-        "region_words_total": total_words,
-        "residual_words": residual_words,
-        "template_constant_words": sum(
+) -> Coverage:
+    return Coverage(
+        region_words_total=total_words,
+        residual_words=residual_words,
+        template_constant_words=sum(
             len(c["value"].split()) for blocks in constants.values() for c in blocks
         ),
-        "per_product_unreachable_words": sum(
+        per_product_unreachable_words=sum(
             len(b.split()) for blocks in per_product_theme.values() for b in blocks
         ),
-        "coverage_pct": (
+        coverage_pct=(
             round(100.0 * (total_words - residual_words) / total_words, 1)
             if total_words else None
         ),
-    }
+    )
 
 
 def _residual_analysis(
@@ -778,7 +808,7 @@ def _residual_analysis(
     verdicts: dict[Ident, KeyVerdict],
     pre_group: dict[str, list[str]] | None = None,
     group_shared: dict[str, list[str]] | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[TemplateConstants, Coverage]:
     explained = _explained_index(by_handle, regions, verdicts)
     residual_blocks, total_words, residual_words = _residual_blocks(store, regions, explained)
     constants, per_product_theme = _template_constants(
@@ -787,19 +817,19 @@ def _residual_analysis(
     per_product = _per_product_pairs(by_handle, regions, constants)
 
     theme_counts = {
-        h: {"blocks": len(blocks), "words": sum(len(b.split()) for b in blocks)}
+        h: ThemeBlockCount(blocks=len(blocks), words=sum(len(b.split()) for b in blocks))
         for h, blocks in per_product_theme.items()
     }
-    ranked = sorted(theme_counts, key=lambda h: -theme_counts[h]["words"])
+    ranked = sorted(theme_counts, key=lambda h: -theme_counts[h].words)
 
     return (
-        {
-            "by_template": constants,
-            "per_product": per_product,
-            "per_product_theme_counts": theme_counts,
-            "per_product_theme_sample": {
+        TemplateConstants(
+            by_template=constants,
+            per_product=per_product,
+            per_product_theme_counts=theme_counts,
+            per_product_theme_sample={
                 h: per_product_theme[h][:20] for h in ranked[:5] if per_product_theme[h]
             },
-        },
+        ),
         _coverage_totals(constants, per_product_theme, total_words, residual_words),
     )

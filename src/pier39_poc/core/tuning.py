@@ -41,6 +41,7 @@ class CrawlTuning(Strict):
 
 class ProfilingTuning(Strict):
     allowlist_min_support: int = 3
+    stale_support_ratio: float = 0.5
     allowlist_min_hit_rate: float = 0.8
     foreign_title_reject_rate: float = 0.25
     label_min_observations: int = 2

@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from pier39_poc.core.models import KeyVerdictRecord
+
 ATTRIBUTES: dict[str, tuple[str, ...]] = {
     "allergens": ("contains", "allergen", "free_from", "nut_free", "gluten", "dairy"),
     "nutrition": ("nutrient", "nutrition", "calorie", "protein", "macro"),
@@ -31,7 +33,7 @@ def _matches(text: str, needles: tuple[str, ...]) -> bool:
 
 
 def build(
-    allowlist: list[dict[str, Any]],
+    allowlist: list[KeyVerdictRecord],
     template_constants: dict[str, list[dict[str, Any]]],
     reference_keys: dict[str, int],
     per_product_labels: set[str] | None = None,
@@ -48,10 +50,10 @@ def build(
 
     for name, needles in ATTRIBUTES.items():
         api = [
-            {"key": f"{e['namespace']}.{e['key']}", "support": e.get("support", 0)}
+            {"key": f"{e.namespace}.{e.key}", "support": e.support}
             for e in allowlist
-            if _matches(f"{e['namespace']}.{e['key']}", needles)
-            or _matches(e.get("label") or "", needles)
+            if _matches(f"{e.namespace}.{e.key}", needles)
+            or _matches(e.label or "", needles)
         ]
         theme = [label for label in theme_labels if _matches(label, needles)]
         image = [
@@ -79,9 +81,9 @@ def build(
     out["_unmapped"] = {
         "api": sorted(
             {
-                f"{e['namespace']}.{e['key']}"
+                f"{e.namespace}.{e.key}"
                 for e in allowlist
-                if f"{e['namespace']}.{e['key']}" not in mapped_api
+                if f"{e.namespace}.{e.key}" not in mapped_api
             }
         ),
         "theme": [label for label in theme_labels if label not in mapped_theme],
